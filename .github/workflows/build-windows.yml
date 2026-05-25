@@ -1,0 +1,104 @@
+name: Build Windows EXE Light
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path requirements.txt) {
+            pip install -r requirements.txt
+          }
+          pip install pyinstaller
+
+      - name: Build with PyInstaller light mode
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $addData = @()
+          $items = @(
+            @{src="bms_logger/protocols"; dst="bms_logger/protocols"},
+            @{src="bms_profiles"; dst="bms_profiles"},
+            @{src="pcs_profiles"; dst="pcs_profiles"},
+            @{src="protocols/pcs"; dst="protocols/pcs"},
+            @{src="config_templates"; dst="config_templates"},
+            @{src="default_configs"; dst="default_configs"},
+            @{src="alarm_map.json"; dst="."},
+            @{src="PCS_PROFILE_GUIDE.md"; dst="."}
+          )
+
+          foreach ($item in $items) {
+            if (Test-Path $item.src) {
+              $addData += "--add-data"
+              $addData += "$($item.src);$($item.dst)"
+            }
+          }
+
+          $entry = "app.py"
+          if (-not (Test-Path $entry)) {
+            if (Test-Path "main.py") {
+              $entry = "main.py"
+            } elseif (Test-Path "bms_logger/app.py") {
+              $entry = "bms_logger/app.py"
+            } else {
+              throw "Cannot find entry file: app.py, main.py, or bms_logger/app.py"
+            }
+          }
+
+          pyinstaller `
+            --noconfirm `
+            --clean `
+            --onedir `
+            --windowed `
+            --name "ESS-AIO" `
+            --hidden-import PySide6.QtCore `
+            --hidden-import PySide6.QtGui `
+            --hidden-import PySide6.QtWidgets `
+            --hidden-import PySide6.QtNetwork `
+            --hidden-import pymodbus `
+            --hidden-import pymodbus.client `
+            --hidden-import pymodbus.exceptions `
+            @addData `
+            $entry
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "dist/ESS-AIO/ESS-AIO.exe")) {
+            Get-ChildItem -Recurse dist | Select-Object FullName
+            throw "ESS-AIO.exe not found"
+          }
+
+      - name: Create ZIP artifact
+        shell: pwsh
+        run: |
+          if (Test-Path "ESS-AIO-windows-light.zip") {
+            Remove-Item "ESS-AIO-windows-light.zip" -Force
+          }
+          Compress-Archive -Path "dist/ESS-AIO/*" -DestinationPath "ESS-AIO-windows-light.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ESS-AIO-windows-light
+          path: ESS-AIO-windows-light.zip
+          retention-days: 14
