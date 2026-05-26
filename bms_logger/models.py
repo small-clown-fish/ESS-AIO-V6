@@ -18,6 +18,10 @@ class Cluster:
     pcs_devices: List[Device] = field(default_factory=list)
     allocation_mode: str = "equal_split"
     fault_strategy: str = "stop_all"
+    # Optional BMS-to-PCS dispatch topology. Example:
+    # {"PCS-1": {"BMS-1": 1.0, "BMS-2": 0.5}, "PCS-2": {"BMS-2": 0.5, "BMS-3": 1.0}}
+    # When empty, cluster strategy falls back to equal/capacity allocation.
+    power_map: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     @property
     def pcs_device(self) -> Device | None:

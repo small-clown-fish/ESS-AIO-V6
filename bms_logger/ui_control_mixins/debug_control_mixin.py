@@ -177,8 +177,14 @@ class DebugControlMixin:
                 self.control_log(f"[BMS VERSION] {device_name}: connect failed")
                 return
 
-            versions = client.read_software_version()
-            self.control_log(f"[BMS VERSION] ===== {device_name} =====")
+            sbmu_count = 0
+            try:
+                sbmu_count = int(getattr(self, "sbmu_version_count_spin").value())
+            except Exception:
+                sbmu_count = 0
+
+            versions = client.read_software_version(sbmu_count=sbmu_count)
+            self.control_log(f"[BMS VERSION] ===== {device_name} / SBMU count={sbmu_count} =====")
             for name, value in versions.items():
                 self.control_log(f"[BMS VERSION] {name}: {value}")
             self.last_control_result_label.setText("BMS version read")

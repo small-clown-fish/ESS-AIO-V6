@@ -63,18 +63,15 @@ def _build_control_tab(self, tabs: QTabWidget) -> None:
         self._build_bms_control_column(bms_layout)
         control_inner_tabs.addTab(bms_control_page, "BMS Control")
 
+        # PCS Control is a core page now. Do not hide it by runtime_config,
+        # otherwise older user settings can make the tab disappear after an update.
         self.pcs_control_tab_index = -1
-        if getattr(self, "pcs_control_ui_enabled", True):
-            pcs_control_page = QWidget()
-            pcs_layout = QVBoxLayout(pcs_control_page)
-            pcs_layout.setContentsMargins(4, 8, 4, 4)
-            pcs_layout.setSpacing(12)
-            self._build_pcs_control_column(pcs_layout)
-            self.pcs_control_tab_index = control_inner_tabs.addTab(pcs_control_page, "PCS Control")
-        else:
-            info = QLabel("PCS Control is disabled for this release. Enable it in Settings if needed.")
-            info.setObjectName("PageHint")
-            control_root.addWidget(info)
+        pcs_control_page = QWidget()
+        pcs_layout = QVBoxLayout(pcs_control_page)
+        pcs_layout.setContentsMargins(4, 8, 4, 4)
+        pcs_layout.setSpacing(12)
+        self._build_pcs_control_column(pcs_layout)
+        self.pcs_control_tab_index = control_inner_tabs.addTab(pcs_control_page, "PCS Control")
 
         tabs.addTab(control_tab, "Control")
 
@@ -109,6 +106,12 @@ def _build_bms_control_column(self, parent: QVBoxLayout) -> None:
         self.bms_debug_status_btn.clicked.connect(self.handle_read_bms_debug_status)
         self.bms_version_btn = QPushButton("Read BMS Version")
         self.bms_version_btn.clicked.connect(self.handle_read_bms_version)
+        self.sbmu_version_count_spin = QSpinBox()
+        self.sbmu_version_count_spin.setRange(0, 63)
+        self.sbmu_version_count_spin.setValue(0)
+        self.sbmu_version_count_spin.setPrefix("SBMU ")
+        self.sbmu_version_count_spin.setSuffix(" pcs")
+        self.sbmu_version_count_spin.setToolTip("Read SBMU version blocks. SBMU02/03... use SBMU01 address + 0x400 per index.")
         self.start_all_bms_hb_btn = QPushButton("Start All BMS HB")
         self.stop_all_bms_hb_btn = QPushButton("Stop All BMS HB")
 
@@ -139,6 +142,7 @@ def _build_bms_control_column(self, parent: QVBoxLayout) -> None:
         bms_single_row.addWidget(self.clear_fault_btn)
         bms_single_row.addWidget(self.bms_debug_status_btn)
         bms_single_row.addWidget(self.bms_version_btn)
+        bms_single_row.addWidget(self.sbmu_version_count_spin)
         bms_single_row.addStretch()
 
         bms_basic_layout.addLayout(bms_all_row)

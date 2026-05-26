@@ -628,6 +628,7 @@ class UiDeviceMixin:
                 "pcs_devices": [pcs.name for pcs in getattr(cluster, "pcs_devices", [])],
                 "allocation_mode": getattr(cluster, "allocation_mode", "equal_split"),
                 "fault_strategy": getattr(cluster, "fault_strategy", "stop_all"),
+                "power_map": getattr(cluster, "power_map", {}) or {},
             }
             strategy = getattr(cluster, "strategy", None)
             if isinstance(strategy, dict):
@@ -670,6 +671,7 @@ class UiDeviceMixin:
 
                     cluster.allocation_mode = cluster_data.get("allocation_mode", getattr(cluster, "allocation_mode", "equal_split"))
                     cluster.fault_strategy = cluster_data.get("fault_strategy", getattr(cluster, "fault_strategy", "stop_all"))
+                    cluster.power_map = dict(cluster_data.get("power_map") or {})
                     # Strategy settings are project configuration only. Restore
                     # them into UI/runtime data, but never auto-start strategy.
                     cluster.strategy = dict(cluster_data.get("strategy") or {})

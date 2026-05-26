@@ -122,6 +122,9 @@ class SiteMixin:
             for col, value in enumerate(values):
                 self.site_cluster_table.setItem(row, col, QTableWidgetItem(value))
 
+        if hasattr(self, "refresh_cluster_power_map_editor"):
+            self.refresh_cluster_power_map_editor()
+
     def apply_cluster_name(self) -> None:
         if not hasattr(self, "cluster_name_edit"):
             return
@@ -262,6 +265,8 @@ class SiteMixin:
                             self.cluster_pcs_combo.addItem(pcs_name)
                         self.cluster_pcs_combo.setCurrentText(pcs_name)
 
+                if hasattr(self, "refresh_cluster_power_map_editor"):
+                    self.refresh_cluster_power_map_editor()
                 self.log(f"[INFO] Active cluster changed: {cluster_name}")
                 return
 
@@ -519,3 +524,143 @@ SiteMixin.cluster_strategy_apply_dict_to_ui = _cluster_strategy_apply_dict_to_ui
 SiteMixin.capture_selected_cluster_strategy_from_ui = _capture_selected_cluster_strategy_from_ui
 SiteMixin.apply_selected_cluster_strategy_to_ui = _apply_selected_cluster_strategy_to_ui
 SiteMixin._cluster_strategy_defaults = _cluster_strategy_defaults
+
+# =========================
+# Cluster power_map UI helpers
+# =========================
+def _get_power_map_cluster(self):
+    name = ""
+    if hasattr(self, "active_cluster_combo"):
+        name = self.active_cluster_combo.currentText().strip()
+    if not name and hasattr(self, "cluster_binding_target_combo"):
+        name = self.cluster_binding_target_combo.currentText().strip()
+    if not name and hasattr(self, "default_cluster"):
+        name = self.default_cluster.name
+    for cluster in getattr(getattr(self, "site", None), "clusters", []) or []:
+        if cluster.name == name:
+            return cluster
+    return getattr(self, "default_cluster", None)
+
+
+def _refresh_cluster_power_map_editor(self) -> None:
+    if not hasattr(self, "cluster_power_map_table"):
+        return
+    table = self.cluster_power_map_table
+    cluster = self._get_power_map_cluster() if hasattr(self, "_get_power_map_cluster") else None
+    if cluster is None:
+        table.setRowCount(0)
+        table.setColumnCount(0)
+        return
+
+    bms_names = [dev.name for dev in getattr(cluster, "bms_devices", []) or []]
+    pcs_names = [pcs.name for pcs in getattr(cluster, "pcs_devices", []) or []]
+    power_map = getattr(cluster, "power_map", {}) or {}
+
+    table.blockSignals(True)
+    try:
+        table.clear()
+        table.setColumnCount(1 + len(bms_names))
+        table.setRowCount(len(pcs_names))
+        table.setHorizontalHeaderLabels(["PCS \\ BMS"] + bms_names)
+        for r, pcs_name in enumerate(pcs_names):
+            pcs_item = QTableWidgetItem(pcs_name)
+            pcs_item.setFlags(pcs_item.flags() & ~Qt.ItemIsEditable)
+            table.setItem(r, 0, pcs_item)
+            row_weights = power_map.get(pcs_name, {}) if isinstance(power_map, dict) else {}
+            for c, bms_name in enumerate(bms_names, start=1):
+                value = row_weights.get(bms_name, "") if isinstance(row_weights, dict) else ""
+                text = "" if value in (None, "") else str(value)
+                item = QTableWidgetItem(text)
+                item.setToolTip("Weight > 0 means this PCS can use this BMS capacity. Empty/0 means no direct allocation.")
+                table.setItem(r, c, item)
+        table.resizeColumnsToContents()
+    finally:
+        table.blockSignals(False)
+
+
+def _apply_cluster_power_map_from_ui(self) -> None:
+    if not hasattr(self, "cluster_power_map_table"):
+        return
+    cluster = self._get_power_map_cluster() if hasattr(self, "_get_power_map_cluster") else None
+    if cluster is None:
+        QMessageBox.warning(self, "Power Map", "No active cluster selected.")
+        return
+    table = self.cluster_power_map_table
+    bms_names = [dev.name for dev in getattr(cluster, "bms_devices", []) or []]
+    if table.columnCount() < 2 or table.rowCount() < 1 or not bms_names:
+        cluster.power_map = {}
+        self.save_site_config()
+        QMessageBox.information(self, "Power Map", "No BMS/PCS mapping available. Cleared power_map.")
+        return
+
+    new_map: dict[str, dict[str, float]] = {}
+    errors: list[str] = []
+    for r in range(table.rowCount()):
+        pcs_item = table.item(r, 0)
+        pcs_name = pcs_item.text().strip() if pcs_item else ""
+        if not pcs_name:
+            continue
+        row_map: dict[str, float] = {}
+        for c, bms_name in enumerate(bms_names, start=1):
+            item = table.item(r, c)
+            text = item.text().strip() if item else ""
+            if not text:
+                continue
+            try:
+                weight = float(text)
+            except ValueError:
+                errors.append(f"{pcs_name}/{bms_name}: invalid weight '{text}'")
+                continue
+            if weight <= 0:
+                continue
+            row_map[bms_name] = weight
+        if row_map:
+            new_map[pcs_name] = row_map
+
+    if errors:
+        QMessageBox.warning(self, "Power Map", "Some weights were ignored:\n" + "\n".join(errors[:8]))
+    cluster.power_map = new_map
+    self.save_site_config()
+    self.refresh_site_view()
+    try:
+        self.refresh_cluster_strategy_status_text()
+    except Exception:
+        pass
+    self.log(f"[INFO] Applied power_map for {cluster.name}: {new_map or '{}'}")
+    QMessageBox.information(self, "Power Map", f"Saved power_map for {cluster.name}.\nEmpty map means default equal/capacity allocation.")
+
+
+def _clear_cluster_power_map(self) -> None:
+    cluster = self._get_power_map_cluster() if hasattr(self, "_get_power_map_cluster") else None
+    if cluster is None:
+        return
+    cluster.power_map = {}
+    self.save_site_config()
+    self.refresh_cluster_power_map_editor()
+    self.refresh_site_view()
+    self.log(f"[INFO] Cleared power_map for {cluster.name}")
+
+
+def _auto_even_cluster_power_map(self) -> None:
+    cluster = self._get_power_map_cluster() if hasattr(self, "_get_power_map_cluster") else None
+    if cluster is None:
+        QMessageBox.warning(self, "Power Map", "No active cluster selected.")
+        return
+    bms_names = [dev.name for dev in getattr(cluster, "bms_devices", []) or []]
+    pcs_names = [pcs.name for pcs in getattr(cluster, "pcs_devices", []) or []]
+    if not bms_names or not pcs_names:
+        QMessageBox.warning(self, "Power Map", "Please bind BMS and PCS to this cluster first.")
+        return
+    weight = round(1.0 / max(len(pcs_names), 1), 6)
+    cluster.power_map = {pcs: {bms: weight for bms in bms_names} for pcs in pcs_names}
+    self.save_site_config()
+    self.refresh_cluster_power_map_editor()
+    self.refresh_site_view()
+    self.log(f"[INFO] Auto even power_map for {cluster.name}: each BMS split across {len(pcs_names)} PCS")
+
+
+SiteMixin._get_power_map_cluster = _get_power_map_cluster
+SiteMixin.refresh_cluster_power_map_editor = _refresh_cluster_power_map_editor
+SiteMixin.apply_cluster_power_map_from_ui = _apply_cluster_power_map_from_ui
+SiteMixin.clear_cluster_power_map = _clear_cluster_power_map
+SiteMixin.auto_even_cluster_power_map = _auto_even_cluster_power_map

@@ -112,10 +112,17 @@ class FakeBmsClient:
             "bms_heartbeat_0x0300": self.heartbeat,
         }
 
-    def read_software_version(self):
-        return {
+    def read_software_version(self, sbmu_count: int = 0):
+        result = {
             "MBMU Software": "FAKE-MBMU-SW-V1.0",
             "MBMU Hardware": "FAKE-MBMU-HW-V1.0",
             "ETH Software": "FAKE-ETH-SW-V1.0",
             "ETH Hardware": "FAKE-ETH-HW-V1.0",
         }
+        for idx in range(1, max(0, int(sbmu_count or 0)) + 1):
+            prefix = f"SBMU{idx:02d}"
+            result[f"{prefix} Software"] = f"FAKE-{prefix}-SW-V1.0"
+            result[f"{prefix} Hardware"] = f"FAKE-{prefix}-HW-V1.0"
+            result[f"{prefix} CSC Software"] = f"FAKE-{prefix}-CSC-SW-V1.0"
+            result[f"{prefix} CSC Hardware"] = f"FAKE-{prefix}-CSC-HW-V1.0"
+        return result

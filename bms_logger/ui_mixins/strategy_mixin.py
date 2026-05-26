@@ -427,6 +427,7 @@ def _cluster_strategy_start(self) -> None:
         dispatch_power=self._cluster_strategy_dispatch_power,
         log=lambda msg: self.bridge.control_log_message.emit(str(msg)),
         state_callback=self._cluster_strategy_on_state,
+        power_map=getattr(cluster, "power_map", {}) or {},
     )
     self.cluster_strategy_workers[cluster_name] = worker
     worker.start()

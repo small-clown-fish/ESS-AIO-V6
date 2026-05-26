@@ -71,6 +71,7 @@ class ClusterStrategyWorker(threading.Thread):
         dispatch_power: CommandDispatcher,
         log: Optional[LogFn] = None,
         state_callback: Optional[Callable[[str, ClusterStrategyState], None]] = None,
+        power_map: Optional[Dict[str, Dict[str, float]]] = None,
     ) -> None:
         super().__init__(daemon=True)
         self.settings = settings
@@ -81,6 +82,7 @@ class ClusterStrategyWorker(threading.Thread):
         self.dispatch_power = dispatch_power
         self.log = log or (lambda _msg: None)
         self.state_callback = state_callback
+        self.power_map = power_map or {}
         self.state = ClusterStrategyState()
         self._stop_event = threading.Event()
         self._last_dispatch: Dict[str, float] = {}
@@ -269,25 +271,37 @@ class ClusterStrategyWorker(threading.Thread):
         self.state.current_signed_kw = final_signed
         self.state.final_cluster_kw = final_signed
 
-        allocation = ClusterPowerAllocator.allocate(
-            final_signed,
-            self.pcs_configs,
-            self.pcs_names,
-            self.settings.allocation_mode,
-        )
+        bms_allowed_map = {r.name: float(r.allowed_kw) for r in ok_results}
+        if isinstance(self.power_map, dict) and self.power_map:
+            allocation = ClusterPowerAllocator.topology_weighted(
+                final_signed,
+                self.pcs_configs,
+                self.pcs_names,
+                bms_allowed_map,
+                self.power_map,
+            )
+            allocation_reason = "topology_power_map"
+        else:
+            allocation = ClusterPowerAllocator.allocate(
+                final_signed,
+                self.pcs_configs,
+                self.pcs_names,
+                self.settings.allocation_mode,
+            )
+            allocation_reason = self.settings.allocation_mode
         self.state.allocation = allocation
         reasons = ", ".join(f"{r.name}:{r.allowed_kw:.1f}kW({r.reason})" for r in ok_results)
         clamped = abs(final_signed) < abs(requested_after_ramp) - 1e-6
         status = "LIMITED_BY_BMS" if clamped else ("RAMPING" if abs(final_signed - target_signed) > 0.1 else "RUNNING")
         self._dispatch_allocation(allocation, f"cluster_strategy_{self.settings.cluster_name}")
-        self._emit(status, f"operation={operation}; allowed_total={allowed_total:.1f}kW; {reasons}")
+        self._emit(status, f"operation={operation}; allowed_total={allowed_total:.1f}kW; allocation={allocation_reason}; {reasons}")
 
     def run(self) -> None:
         self._emit("STARTING", f"cluster={self.settings.cluster_name}")
         self.log(
             f"[CLUSTER_STRATEGY] start {self.settings.cluster_name}: "
             f"mode={self.settings.mode}, target={self.settings.target_power_kw}kW, "
-            f"BMS={self.bms_names}, PCS={self.pcs_names}"
+            f"BMS={self.bms_names}, PCS={self.pcs_names}, power_map={bool(self.power_map)}"
         )
         next_ramp_ts = 0.0
         while not self._stop_event.is_set():

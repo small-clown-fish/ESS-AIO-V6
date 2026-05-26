@@ -319,16 +319,52 @@ class BmsModbusClient:
             return "°C"
         return ""
 
-    def read_software_version(self) -> Dict[str, Any]:
-        # CATL V17 point table: 0x0100-0x0107 MBMU Software,
-        # 0x0108-0x010f MBMU Hardware, 0x0110-0x0117 ETH Software,
-        # 0x0118-0x011f ETH Hardware. Each block is 16 bytes / 8 registers, ASCII.
-        return {
+    def _find_ascii_version_address(self, description_keyword: str, fallback: int) -> int:
+        """Find an ASCII version block address from the active point table.
+
+        CATL point tables usually list the version block for the first object only.
+        For SBMU version blocks, SBMU02/SBMU03... are derived by adding 0x400.
+        """
+        needle = description_keyword.lower().strip()
+        for point in self.point_table.by_address.values():
+            desc = str(point.description or "").lower().strip()
+            if needle and needle in desc:
+                return int(point.address)
+        return fallback
+
+    def read_software_version(self, sbmu_count: int = 0) -> Dict[str, Any]:
+        # CATL point table: each version block is 16 bytes / 8 registers / ASCII.
+        # MBMU area is fixed. SBMU version blocks are defined for SBMU01 in the
+        # point table, and SBMUn = SBMU01 address + (n - 1) * 0x400.
+        result: Dict[str, Any] = {
             "MBMU Software": self._read_ascii_registers(0x0100, 8),
             "MBMU Hardware": self._read_ascii_registers(0x0108, 8),
             "ETH Software": self._read_ascii_registers(0x0110, 8),
             "ETH Hardware": self._read_ascii_registers(0x0118, 8),
         }
+
+        try:
+            count = max(0, min(int(sbmu_count or 0), 63))
+        except Exception:
+            count = 0
+
+        if count <= 0:
+            return result
+
+        sbmu_sw_base = self._find_ascii_version_address("SBMU Software", 0x07C0)
+        sbmu_hw_base = self._find_ascii_version_address("SBMU Hardware", 0x07C8)
+        csc_sw_base = self._find_ascii_version_address("CSC Software", 0x07D0)
+        csc_hw_base = self._find_ascii_version_address("CSC Hardware", 0x07D8)
+
+        for idx in range(1, count + 1):
+            offset = (idx - 1) * 0x400
+            prefix = f"SBMU{idx:02d}"
+            result[f"{prefix} Software"] = self._read_ascii_registers(sbmu_sw_base + offset, 8)
+            result[f"{prefix} Hardware"] = self._read_ascii_registers(sbmu_hw_base + offset, 8)
+            result[f"{prefix} CSC Software"] = self._read_ascii_registers(csc_sw_base + offset, 8)
+            result[f"{prefix} CSC Hardware"] = self._read_ascii_registers(csc_hw_base + offset, 8)
+
+        return result
 
     def read_debug_status(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {}

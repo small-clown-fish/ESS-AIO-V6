@@ -131,6 +131,39 @@ def _build_site_tab(self, tabs: QTabWidget) -> None:
         cluster_layout.addWidget(self.move_bms_btn, 2, 4)
         site_layout.addWidget(cluster_group)
 
+        power_map_group = QGroupBox("Cluster Power Map (BMS → PCS Weight)")
+        power_map_layout = QVBoxLayout(power_map_group)
+        power_map_hint = QLabel(
+            "Optional. Leave empty for default equal split. Example: PCS-1 uses BMS-1=1.0 and BMS-2=0.5; "
+            "PCS-2 uses BMS-2=0.5 and BMS-3=1.0."
+        )
+        power_map_hint.setWordWrap(True)
+        power_map_layout.addWidget(power_map_hint)
+
+        self.cluster_power_map_table = QTableWidget(0, 0)
+        self.cluster_power_map_table.setAlternatingRowColors(True)
+        self.cluster_power_map_table.setMinimumHeight(180)
+        self.cluster_power_map_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.cluster_power_map_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.MinimumExpanding)
+        power_map_layout.addWidget(self.cluster_power_map_table)
+
+        power_map_btn_row = QHBoxLayout()
+        self.refresh_power_map_btn = QPushButton("Refresh Power Map")
+        self.auto_power_map_btn = QPushButton("Auto Even Map")
+        self.apply_power_map_btn = QPushButton("Apply Power Map")
+        self.clear_power_map_btn = QPushButton("Clear Power Map")
+        self.refresh_power_map_btn.clicked.connect(self.refresh_cluster_power_map_editor)
+        self.auto_power_map_btn.clicked.connect(self.auto_even_cluster_power_map)
+        self.apply_power_map_btn.clicked.connect(self.apply_cluster_power_map_from_ui)
+        self.clear_power_map_btn.clicked.connect(self.clear_cluster_power_map)
+        power_map_btn_row.addWidget(self.refresh_power_map_btn)
+        power_map_btn_row.addWidget(self.auto_power_map_btn)
+        power_map_btn_row.addWidget(self.apply_power_map_btn)
+        power_map_btn_row.addWidget(self.clear_power_map_btn)
+        power_map_btn_row.addStretch()
+        power_map_layout.addLayout(power_map_btn_row)
+        site_layout.addWidget(power_map_group)
+
         site_group = QGroupBox("Cluster Overview")
         group_layout = QVBoxLayout(site_group)
         self.site_cluster_table = QTableWidget(0, 4)
