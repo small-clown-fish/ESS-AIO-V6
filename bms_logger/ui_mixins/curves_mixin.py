@@ -37,8 +37,15 @@ class CurvesMixin:
             self.online_chart,
         )
 
-        self.refresh_dynamic_point_options(device_name)
-        self.refresh_selected_dynamic_points_list()
+        # Rebuilding combo/list widgets is expensive on Windows. In performance
+        # mode, refresh point options only every 30s; the plotted data still updates.
+        import time
+        now = time.time()
+        last_opts = float(getattr(self, "_last_dynamic_point_options_refresh", 0.0))
+        if (not getattr(self, "performance_mode_enabled", True)) or (now - last_opts >= 30.0):
+            self._last_dynamic_point_options_refresh = now
+            self.refresh_dynamic_point_options(device_name)
+            self.refresh_selected_dynamic_points_list()
         self.refresh_dynamic_chart(device_name)
 
 

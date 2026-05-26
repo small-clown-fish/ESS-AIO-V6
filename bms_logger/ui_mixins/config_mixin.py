@@ -131,9 +131,11 @@ class ConfigMixin:
             self.worker_start_stagger_seconds = float(
                 data.get("worker_start_stagger_seconds", self.worker_start_stagger_seconds)
             )
-            self.ui_refresh_interval = float(
-                data.get("ui_refresh_interval", self.ui_refresh_interval)
-            )
+            self.performance_mode_enabled = bool(data.get("performance_mode_enabled", getattr(self, "performance_mode_enabled", True)))
+            self.ui_refresh_interval = float(data.get("ui_refresh_interval", self.ui_refresh_interval))
+            self.curve_refresh_interval = float(data.get("curve_refresh_interval", getattr(self, "curve_refresh_interval", 5.0)))
+            self.status_refresh_interval = float(data.get("status_refresh_interval", getattr(self, "status_refresh_interval", 5.0)))
+            self.log_flush_interval_ms = int(data.get("log_flush_interval_ms", getattr(self, "log_flush_interval_ms", 1000)))
 
             self.log("[INFO] Runtime config loaded")
 
@@ -163,7 +165,11 @@ class ConfigMixin:
             "pcs_control_ui_enabled": self.pcs_control_ui_enabled,
             "fake_mode": self.fake_mode,
             "worker_start_stagger_seconds": self.worker_start_stagger_seconds,
+            "performance_mode_enabled": getattr(self, "performance_mode_enabled", True),
             "ui_refresh_interval": self.ui_refresh_interval,
+            "curve_refresh_interval": getattr(self, "curve_refresh_interval", 5.0),
+            "status_refresh_interval": getattr(self, "status_refresh_interval", 5.0),
+            "log_flush_interval_ms": getattr(self, "log_flush_interval_ms", 1000),
         }
 
         try:

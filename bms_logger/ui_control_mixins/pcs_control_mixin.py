@@ -384,8 +384,27 @@ class PcsControlMixin:
         self.pcs_fault_confirm_count = int(self.pcs_fault_confirm_spin.value())
         if hasattr(self, "worker_stagger_spin"):
             self.worker_start_stagger_seconds = float(self.worker_stagger_spin.value())
+        if hasattr(self, "performance_mode_combo"):
+            self.performance_mode_enabled = self.performance_mode_combo.currentText() == "Enabled"
         if hasattr(self, "ui_refresh_interval_spin"):
             self.ui_refresh_interval = float(self.ui_refresh_interval_spin.value())
+        if hasattr(self, "curve_refresh_interval_spin"):
+            self.curve_refresh_interval = float(self.curve_refresh_interval_spin.value())
+        if hasattr(self, "status_refresh_interval_spin"):
+            self.status_refresh_interval = float(self.status_refresh_interval_spin.value())
+        if hasattr(self, "log_flush_interval_spin"):
+            self.log_flush_interval_ms = int(self.log_flush_interval_spin.value())
+            timer = getattr(self, "_log_flush_timer", None)
+            if timer is not None:
+                try:
+                    timer.setInterval(int(self.log_flush_interval_ms))
+                except Exception:
+                    pass
+        if hasattr(self, "fleet_status_timer"):
+            try:
+                self.fleet_status_timer.setInterval(int(max(1000, float(getattr(self, "status_refresh_interval", 5.0)) * 1000)))
+            except Exception:
+                pass
 
         self.control_log(
             "[PARAM] Runtime parameters applied: "
@@ -403,7 +422,10 @@ class PcsControlMixin:
             f"alarm_window_before={self.alarm_history_window_before_minutes}min, "
             f"alarm_window_after={self.alarm_history_window_after_minutes}min, "
             f"worker_stagger={self.worker_start_stagger_seconds}s, "
+            f"performance_mode={'Enabled' if getattr(self, 'performance_mode_enabled', True) else 'Disabled'}, "
             f"ui_refresh={self.ui_refresh_interval}s, "
+            f"curve_refresh={getattr(self, 'curve_refresh_interval', 5.0)}s, "
+            f"status_refresh={getattr(self, 'status_refresh_interval', 5.0)}s, "
         )
         self.save_runtime_config()
 

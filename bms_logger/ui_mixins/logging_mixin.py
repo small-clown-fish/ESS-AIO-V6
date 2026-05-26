@@ -82,12 +82,12 @@ class LoggingMixin:
             self.operation_log(message)
 
     def _should_show_control_log_message(self, message: str, *, interval: float = 5.0) -> bool:
-        """Protect the Control Log QTextEdit from high-frequency runtime noise.
+        """Return whether a control log line should be painted in the UI.
 
-        Normal heartbeat success lines and unchanged periodic queue confirmations do
-        not belong in the UI log during 24 BMS / 48 PCS long-run tests. Keep
-        operator actions, state changes, warnings, errors, cutoff and timeout
-        messages visible. Repeated failures are rate-limited per normalized key.
+        Windows field mode defaults to a quiet Control Log: keep warnings/errors,
+        cutoff/timeout/fault, and true state transitions; suppress INFO-level
+        heartbeat/queue/strategy success noise. This protects QTextEdit from
+        repaint storms during 24-BMS/48-PCS runs.
         """
         import re
         import time
@@ -95,35 +95,27 @@ class LoggingMixin:
         text = str(message)
         lower = text.lower()
 
-        # Always show operator-visible state transitions and fault conditions.
-        important_tokens = (
-            "[warn]", "[error]", "exception", "failed", "timeout",
-            "broken pipe", "transaction_id", "no response", "cutoff",
-            "started", "stopped", "enabled", "disabled", "recovered",
-            "fault", "connect failed", "offline",
+        # Always drop known high-frequency success/no-op lines from the UI.
+        quiet_success_patterns = (
+            "heartbeat write ok", "hb write ok", "heartbeat queued",
+            "bms polling worker not running; heartbeat not queued",
+            "[bms][queue] ok", "set_active_power ok", "cluster_strategy ok",
+            "command worker online", "idle; no connect while idle",
         )
-        if any(token in lower for token in important_tokens):
-            # Still rate-limit repeated noisy error lines.
-            noisy_error_tokens = (
-                "broken pipe", "transaction_id", "no response",
-                "heartbeat exception", "bms_timeout", "cluster allowed power is 0",
-            )
-            if not any(token in lower for token in noisy_error_tokens):
-                return True
-        else:
-            # Drop heartbeat success / per-tick queue confirmations from UI log and
-            # operation log. The status labels still show the current heartbeat value.
-            if "heartbeat=" in lower and " ok" in lower:
-                return False
-            if "heartbeat write ok" in lower or "hb write ok" in lower:
-                return False
-            if "heartbeat queued" in lower and "polling worker" not in lower:
-                return False
-            # Avoid one line per BMS for normal queued periodic writes. Start/stop
-            # summary lines remain visible because they contain Enabled/Disabled.
-            if "[bms][queue]" in lower and " ok" in lower:
-                return False
+        if any(p in lower for p in quiet_success_patterns):
+            return False
 
+        # Show only operator-relevant state and fault lines by default.
+        show_tokens = (
+            "[warn]", "warning", "[error]", "error", "exception", "failed",
+            "timeout", "broken pipe", "transaction_id", "no response",
+            "cutoff", "fault", "offline", "recovered", "cooldown",
+            "strategy started", "strategy stopped", "started", "stopped",
+        )
+        if not any(token in lower for token in show_tokens):
+            return False
+
+        # Rate-limit repeated noisy state/fault lines after normalization.
         bucket = getattr(self, "_control_log_throttle_state", None)
         if bucket is None:
             bucket = {}
@@ -222,7 +214,7 @@ class LoggingMixin:
         self._pending_log_lines = []
         self._pending_control_log_lines = []
         timer = QTimer(self)
-        timer.setInterval(300)
+        timer.setInterval(int(getattr(self, "log_flush_interval_ms", 1000)))
         timer.timeout.connect(self._flush_text_log_queues)
         timer.start()
         self._log_flush_timer = timer
@@ -253,14 +245,14 @@ class LoggingMixin:
             if normal:
                 self._pending_log_lines = []
                 if hasattr(self, "log_text"):
-                    self._append_limited_text(self.log_text, normal, max_lines=1000)
+                    self._append_limited_text(self.log_text, normal, max_lines=500 if getattr(self, "performance_mode_enabled", True) else 1000)
                 else:
                     for line in normal:
                         print(line)
             if control:
                 self._pending_control_log_lines = []
                 if hasattr(self, "control_log_text"):
-                    self._append_limited_text(self.control_log_text, control, max_lines=1000)
+                    self._append_limited_text(self.control_log_text, control, max_lines=500 if getattr(self, "performance_mode_enabled", True) else 1000)
                 else:
                     for line in control:
                         print(line)
@@ -337,7 +329,10 @@ class LoggingMixin:
         if show_in_view:
             self._ensure_log_flush_timer()
             if hasattr(self, "_pending_log_lines"):
-                self._pending_log_lines.append(str(message))
+                pending = self._pending_log_lines
+                pending.append(str(message))
+                if len(pending) > 1000:
+                    del pending[:len(pending) - 1000]
             else:
                 print(message)
         if str(message).startswith("[ERROR]") or str(message).startswith("[CUTOFF]"):
@@ -349,7 +344,10 @@ class LoggingMixin:
         if show_in_view:
             self._ensure_log_flush_timer()
             if hasattr(self, "_pending_control_log_lines"):
-                self._pending_control_log_lines.append(text)
+                pending = self._pending_control_log_lines
+                pending.append(text)
+                if len(pending) > 1000:
+                    del pending[:len(pending) - 1000]
             else:
                 print(text)
             self.operation_log(text)

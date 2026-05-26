@@ -99,7 +99,13 @@ class MainWindow(
         self.task_status_store = TaskStatusStore()
         self.task_status_rows: Dict[str, int] = {}
         self.worker_start_stagger_seconds: float = 0.25
-        self.ui_refresh_interval: float = 1.0
+        self.performance_mode_enabled: bool = True
+        self.ui_refresh_interval: float = 3.0
+        self.curve_refresh_interval: float = 5.0
+        self.status_refresh_interval: float = 5.0
+        self.log_flush_interval_ms: int = 1000
+        self._last_curve_refresh_time: Dict[str, float] = {}
+        self._last_status_refresh_time: float = 0.0
         self._last_ui_refresh_time: Dict[str, float] = {}
         self.heartbeat_workers: Dict[str, HeartbeatWorker] = {}
         self.hv_workers: Dict[str, HvWorkflowWorker] = {}
@@ -128,7 +134,7 @@ class MainWindow(
         # Windows/PyInstaller: keep fleet status refresh lightweight. The UI does
         # not need 1 Hz full snapshot aggregation, and frequent refresh can make
         # Qt appear "Not responding" during reconnect storms.
-        self.fleet_status_timer.setInterval(3000)
+        self.fleet_status_timer.setInterval(5000)
         self.fleet_status_timer.timeout.connect(self.refresh_fleet_heartbeat_status)
         self.fleet_status_timer.start()
         self._fleet_status_refresh_busy = False

@@ -172,11 +172,34 @@ def _build_settings_tab(self, tabs: QTabWidget) -> None:
         self.worker_stagger_spin.setValue(self.worker_start_stagger_seconds)
         self.worker_stagger_spin.setSuffix(" s")
 
+        self.performance_mode_combo = QComboBox()
+        self.performance_mode_combo.addItems(["Enabled", "Disabled"])
+        self.performance_mode_combo.setCurrentText("Enabled" if getattr(self, "performance_mode_enabled", True) else "Disabled")
+        self.performance_mode_combo.setToolTip("Windows performance mode lowers UI/log/curve refresh pressure without changing Modbus sampling.")
+
         self.ui_refresh_interval_spin = QDoubleSpinBox()
         self.ui_refresh_interval_spin.setRange(0.2, 30.0)
         self.ui_refresh_interval_spin.setDecimals(1)
         self.ui_refresh_interval_spin.setValue(self.ui_refresh_interval)
         self.ui_refresh_interval_spin.setSuffix(" s")
+
+        self.curve_refresh_interval_spin = QDoubleSpinBox()
+        self.curve_refresh_interval_spin.setRange(1.0, 60.0)
+        self.curve_refresh_interval_spin.setDecimals(1)
+        self.curve_refresh_interval_spin.setValue(float(getattr(self, "curve_refresh_interval", 5.0)))
+        self.curve_refresh_interval_spin.setSuffix(" s")
+
+        self.status_refresh_interval_spin = QDoubleSpinBox()
+        self.status_refresh_interval_spin.setRange(1.0, 60.0)
+        self.status_refresh_interval_spin.setDecimals(1)
+        self.status_refresh_interval_spin.setValue(float(getattr(self, "status_refresh_interval", 5.0)))
+        self.status_refresh_interval_spin.setSuffix(" s")
+
+        self.log_flush_interval_spin = QSpinBox()
+        self.log_flush_interval_spin.setRange(300, 10000)
+        self.log_flush_interval_spin.setSingleStep(100)
+        self.log_flush_interval_spin.setValue(int(getattr(self, "log_flush_interval_ms", 1000)))
+        self.log_flush_interval_spin.setSuffix(" ms")
 
         def make_card(title: str, rows: list[tuple[str, QWidget]]) -> QGroupBox:
             group = QGroupBox(title)
@@ -236,8 +259,12 @@ def _build_settings_tab(self, tabs: QTabWidget) -> None:
         ])
 
         scheduler_card = make_card("Scheduler / Performance", [
+            ("Performance Mode", self.performance_mode_combo),
             ("Start Stagger", self.worker_stagger_spin),
             ("UI Refresh", self.ui_refresh_interval_spin),
+            ("Curve Refresh", self.curve_refresh_interval_spin),
+            ("Status Refresh", self.status_refresh_interval_spin),
+            ("Log Flush", self.log_flush_interval_spin),
         ])
 
         grid.addWidget(runtime_card, 0, 0)

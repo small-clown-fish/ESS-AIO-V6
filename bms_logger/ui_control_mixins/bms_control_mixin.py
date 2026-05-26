@@ -78,13 +78,32 @@ class BmsControlMixin:
         timer.setInterval(max(200, int(float(getattr(self, "heartbeat_interval", 1.0)) * 1000)))
 
         def tick(name=device_name):
+            # If the BMS polling worker has stopped, stop this heartbeat timer too.
+            # Do NOT keep emitting "worker not running" every interval, otherwise
+            # Control Log/Qt repaint will loop and Windows can become unresponsive.
+            worker = self._get_bms_polling_worker(name)
+            if worker is None:
+                try:
+                    self._stop_bms_queue_heartbeat(name)
+                except Exception:
+                    pass
+                try:
+                    self.bridge.heartbeat_error.emit(name, "BMS polling worker stopped; heartbeat timer stopped")
+                except Exception:
+                    pass
+                return
+
             value = int(self.bms_queue_heartbeat_values.get(name, 0)) % 256
             ok = self._enqueue_bms_worker_command(name, "write_heartbeat", value, label=f"heartbeat={value}")
             if ok:
                 self.bridge.heartbeat_written.emit(name, value)
                 self.bms_queue_heartbeat_values[name] = (value + 1) % 256
             else:
-                self.bridge.heartbeat_error.emit(name, "BMS polling worker not running; heartbeat not queued")
+                try:
+                    self._stop_bms_queue_heartbeat(name)
+                except Exception:
+                    pass
+                self.bridge.heartbeat_error.emit(name, "BMS heartbeat not queued; timer stopped")
 
         timer.timeout.connect(tick)
         self.bms_queue_heartbeat_timers[device_name] = timer
@@ -292,31 +311,23 @@ class BmsControlMixin:
     # Fleet BMS heartbeat and 0x038B periodic insulation-monitor disable
     # ------------------------------------------------------------------
     def handle_start_all_bms_heartbeats(self) -> None:
-        bms_names = self._fleet_bms_names() if hasattr(self, "_fleet_bms_names") else [str(d.get("name", "")).strip() for d in getattr(self, "devices", []) if str(d.get("name", "")).strip()]
+        # Only start heartbeat for BMS devices that already have a running polling
+        # worker. This avoids creating heartbeat timers for stopped/offline devices
+        # and prevents repeated "worker not running" log loops.
+        bms_names = self._online_bms_worker_names()
         if not bms_names:
-            QMessageBox.information(self, "BMS Heartbeat", "No BMS devices configured.")
+            QMessageBox.information(self, "BMS Heartbeat", "No running BMS polling workers. Start BMS monitoring first.")
             return
 
         queued = []
-        missing = []
         for name in bms_names:
             if self._start_bms_queue_heartbeat(name):
                 queued.append(name)
-            else:
-                missing.append(name)
         self.heartbeat_state_label.setText(f"BMS HB queued: {len(queued)}/{len(bms_names)}")
         self.control_state_label.setText("Running" if queued else "Idle")
         self.last_control_result_label.setText(f"BMS HB queued: {len(queued)}/{len(bms_names)}")
         self.refresh_fleet_heartbeat_status()
-        self.control_log(f"[BMS][QUEUE] Heartbeat queued on polling workers: {len(queued)}/{len(bms_names)}")
-        if missing:
-            QMessageBox.warning(
-                self,
-                "BMS Heartbeat",
-                "Some BMS monitoring workers are not running, so heartbeat was not started for them.\n"
-                "Start BMS monitoring first to avoid opening a second Modbus connection.\n\n"
-                f"Skipped: {', '.join(missing[:12])}{'...' if len(missing) > 12 else ''}",
-            )
+        self.control_log(f"[BMS][QUEUE] Heartbeat queued on running polling workers: {len(queued)}/{len(bms_names)}")
 
     def handle_stop_all_bms_heartbeats(self) -> None:
         self._ensure_bms_timer_store()

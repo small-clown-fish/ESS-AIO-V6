@@ -29,7 +29,7 @@ class SchedulerMixin:
         if status.get("error"):
             errors += 1
 
-        row = self.task_status_store.update(
+        self.task_status_store.update(
             device_name,
             status=str(status.get("status", "Idle")),
             reads=reads,
@@ -38,30 +38,45 @@ class SchedulerMixin:
             last_message=str(status.get("last_message", "-")),
         )
 
-        self.refresh_task_status_view()
+        # Updating task status can be very high frequency when 72 fleet workers are
+        # idle/ready. Keep the data store current, but repaint the Qt table only
+        # when the Scheduler/Tasks page is visible and at a low rate.
+        import time
+        now = time.time()
+        interval = float(getattr(self, "status_refresh_interval", 5.0)) if getattr(self, "performance_mode_enabled", True) else 1.0
+        last = float(getattr(self, "_last_task_status_view_refresh", 0.0))
+        visible = True
+        if hasattr(self, "_is_main_page_visible"):
+            visible = self._is_main_page_visible("Scheduler", "Tasks", "Status")
+        if visible and (now - last) >= max(1.0, interval):
+            self._last_task_status_view_refresh = now
+            self.refresh_task_status_view()
 
     def refresh_task_status_view(self) -> None:
         if not hasattr(self, "task_status_table") or not hasattr(self, "task_status_store"):
             return
 
         rows = self.task_status_store.rows()
+        self.task_status_table.setUpdatesEnabled(False)
         self.task_status_table.setRowCount(0)
 
-        for item in rows:
-            row_idx = self.task_status_table.rowCount()
-            self.task_status_table.insertRow(row_idx)
-            values = [
-                item.get("device_name", "-"),
-                item.get("status", "-"),
-                str(item.get("reads", 0)),
-                str(item.get("errors", 0)),
-                str(item.get("last_latency_ms", 0.0)),
-                item.get("last_update", "-"),
-                item.get("last_message", "-"),
-            ]
-            for col, value in enumerate(values):
-                table_item = QTableWidgetItem(str(value))
-                if col == 1:
-                    self._set_table_item_color(table_item, str(value))
-                self.task_status_table.setItem(row_idx, col, table_item)
-
+        try:
+            for item in rows:
+                row_idx = self.task_status_table.rowCount()
+                self.task_status_table.insertRow(row_idx)
+                values = [
+                    item.get("device_name", "-"),
+                    item.get("status", "-"),
+                    str(item.get("reads", 0)),
+                    str(item.get("errors", 0)),
+                    str(item.get("last_latency_ms", 0.0)),
+                    item.get("last_update", "-"),
+                    item.get("last_message", "-"),
+                ]
+                for col, value in enumerate(values):
+                    table_item = QTableWidgetItem(str(value))
+                    if col == 1:
+                        self._set_table_item_color(table_item, str(value))
+                    self.task_status_table.setItem(row_idx, col, table_item)
+        finally:
+            self.task_status_table.setUpdatesEnabled(True)

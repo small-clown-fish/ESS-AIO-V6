@@ -92,6 +92,8 @@ class FleetDeviceWorker(threading.Thread):
         self._long_cooldown_s = 300.0
         self._periodic_commands: Dict[str, PeriodicCommand] = {}
         self._periodic_lock = threading.RLock()
+        self._last_status_key: tuple[str, str, bool] | None = None
+        self._last_status_emit_ts: float = 0.0
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -141,6 +143,15 @@ class FleetDeviceWorker(threading.Thread):
     def _emit_status(self, status: str, message: str = "", error: bool = False) -> None:
         if not self.status_callback:
             return
+        # Windows/Qt performance guard: command-only workers can be idle for hours.
+        # Do not emit the same idle/ready status every 200ms, otherwise the task
+        # status table will repaint constantly and the packaged exe may look frozen.
+        now = time.monotonic()
+        key = (str(status), str(message or status), bool(error))
+        if key == self._last_status_key and (now - self._last_status_emit_ts) < (1.0 if error else 10.0):
+            return
+        self._last_status_key = key
+        self._last_status_emit_ts = now
         try:
             self.status_callback(self.name, {
                 "status": status,

@@ -9,14 +9,17 @@ class AsyncRecorderProxy:
     """Small write queue in front of CsvRecorder / AlarmRecorder.
 
     UI thread enqueues writes quickly; a background writer flushes to disk.
-    close() drains the queue before closing the wrapped recorder.
+    The writer drains items in batches so Windows/Defender/Excel lock delays do
+    not cause one context switch per CSV row. close() drains the queue before
+    closing the wrapped recorder.
     """
 
-    def __init__(self, recorder: Any, max_queue: int = 20000) -> None:
+    def __init__(self, recorder: Any, max_queue: int = 20000, max_batch: int = 256) -> None:
         self.recorder = recorder
         self.queue: queue.Queue[tuple[str, tuple[Any, ...], dict[str, Any]] | None] = queue.Queue(maxsize=max_queue)
         self.running = True
         self.dropped_rows = 0
+        self.max_batch = max(1, int(max_batch))
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
@@ -30,18 +33,33 @@ class AsyncRecorderProxy:
 
     def _run(self) -> None:
         while True:
-            item = self.queue.get()
-            if item is None:
-                self.queue.task_done()
+            first = self.queue.get()
+            batch = [first]
+            # Drain a bounded batch without blocking. This reduces thread wakeups
+            # when many BMS devices write CSV at the same sampling tick.
+            for _ in range(self.max_batch - 1):
+                try:
+                    batch.append(self.queue.get_nowait())
+                except queue.Empty:
+                    break
+
+            stop_after_batch = False
+            for item in batch:
+                if item is None:
+                    stop_after_batch = True
+                    self.queue.task_done()
+                    continue
+                method_name, args, kwargs = item
+                try:
+                    getattr(self.recorder, method_name)(*args, **kwargs)
+                except Exception:
+                    # Recorder errors should not crash sampling/UI.
+                    pass
+                finally:
+                    self.queue.task_done()
+
+            if stop_after_batch:
                 break
-            method_name, args, kwargs = item
-            try:
-                getattr(self.recorder, method_name)(*args, **kwargs)
-            except Exception:
-                # Recorder errors should not crash sampling/UI.
-                pass
-            finally:
-                self.queue.task_done()
 
     def close(self) -> None:
         if not self.running:

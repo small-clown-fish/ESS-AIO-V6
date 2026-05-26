@@ -16,6 +16,18 @@ from PySide6.QtGui import QColor
 
 
 class DataReceiveMixin:
+
+    def _current_main_page_text(self) -> str:
+        try:
+            item = self.nav_list.currentItem()
+            return item.text() if item is not None else ""
+        except Exception:
+            return ""
+
+    def _is_main_page_visible(self, *names: str) -> bool:
+        current = self._current_main_page_text().lower()
+        return any(str(name).lower() in current for name in names)
+
     def on_error_received(self, device_name: str, error: str) -> None:
         import time
         now = time.time()
@@ -44,7 +56,7 @@ class DataReceiveMixin:
         self.sample_index[device_name] += 1
         self.series_buffers[device_name]["online"].append((idx, 0.0))
 
-        if update_ui and self.current_curve_device == device_name:
+        if update_ui and self.current_curve_device == device_name and self._is_main_page_visible("Curves"):
             self.refresh_curves(device_name)
 
         self.log(f"[ERROR] {device_name}: {error}")
@@ -128,50 +140,97 @@ class DataReceiveMixin:
         if recorder and device_name in getattr(self, "bms_csv_recording_devices", set()):
             recorder.write_row(snapshot)
 
-        parser = self.get_alarm_parser_for_device(device_name) if hasattr(self, "get_alarm_parser_for_device") else self.alarm_parser
-        parsed_alarm = parser.parse_snapshot(snapshot)
-
         alarm_recorder = self.alarm_recorders.get(device_name)
+        need_alarm_parse = (
+            bool(alarm_recorder and device_name in getattr(self, "bms_csv_recording_devices", set()))
+            or (self.current_alarm_device == device_name and self._is_main_page_visible("Alarms"))
+        )
+        parsed_alarm = None
+        if need_alarm_parse:
+            parser = self.get_alarm_parser_for_device(device_name) if hasattr(self, "get_alarm_parser_for_device") else self.alarm_parser
+            parsed_alarm = parser.parse_snapshot(snapshot)
+
         if alarm_recorder and device_name in getattr(self, "bms_csv_recording_devices", set()):
-            alarm_recorder.write_row(device_name, snapshot, parsed_alarm)
+            alarm_recorder.write_row(device_name, snapshot, parsed_alarm or {})
 
         self.latest_snapshots[device_name] = snapshot
         online_state = self.evaluate_bms_online_state(device_name, snapshot)
         self.service.on_snapshot(device_name, snapshot, self)
 
-        row = self.device_rows.get(device_name)
-        if row is not None:
-            self.device_table.item(row, 5).setText(str(snapshot.get("bms_status", "-")))
-            self.device_table.item(row, 6).setText(str(snapshot.get("number_of_racks", "-")))
-            self.device_table.item(row, 7).setText(str(snapshot.get("soc", "-")))
-            self.device_table.item(row, 8).setText(str(snapshot.get("system_voltage", "-")))
-            self.device_table.item(row, 9).setText(str(snapshot.get("system_current", "-")))
-            self.device_table.item(row, 10).setText(str(snapshot.get("system_power", "-")))
-            run_item = QTableWidgetItem("Running")
-            self._set_table_item_color(run_item, "Running")
-            self.device_table.setItem(row, 11, run_item)
+        # In Windows performance mode, table repainting is throttled separately from
+        # data collection. Strategy still receives every snapshot via latest_snapshots.
+        now_for_table = time.time()
+        last_table = getattr(self, "_last_device_table_refresh_time", {}).get(device_name, 0.0) if hasattr(self, "_last_device_table_refresh_time") else 0.0
+        table_interval = float(getattr(self, "ui_refresh_interval", 3.0)) if getattr(self, "performance_mode_enabled", True) else 0.5
+        devices_page_visible = self._is_main_page_visible("Devices")
+        hidden_table_interval = max(15.0, table_interval * 5.0)
+        update_table = (now_for_table - last_table) >= (table_interval if devices_page_visible else hidden_table_interval)
+        if not hasattr(self, "_last_device_table_refresh_time"):
+            self._last_device_table_refresh_time = {}
+        if update_table:
+            self._last_device_table_refresh_time[device_name] = now_for_table
 
-            online_item = QTableWidgetItem(online_state)
-            self._set_table_item_color(online_item, online_state)
-            self.device_table.setItem(row, 12, online_item)
+        row = self.device_rows.get(device_name)
+        if row is not None and update_table:
+            def _set_text(col: int, value: object) -> None:
+                item = self.device_table.item(row, col)
+                text = str(value)
+                if item is None:
+                    self.device_table.setItem(row, col, QTableWidgetItem(text))
+                elif item.text() != text:
+                    item.setText(text)
+
+            _set_text(5, snapshot.get("bms_status", "-"))
+            _set_text(6, snapshot.get("number_of_racks", "-"))
+            _set_text(7, snapshot.get("soc", "-"))
+            _set_text(8, snapshot.get("system_voltage", "-"))
+            _set_text(9, snapshot.get("system_current", "-"))
+            _set_text(10, snapshot.get("system_power", "-"))
+
+            item = self.device_table.item(row, 11)
+            if item is None or item.text() != "Running":
+                run_item = QTableWidgetItem("Running")
+                self._set_table_item_color(run_item, "Running")
+                self.device_table.setItem(row, 11, run_item)
+
+            item = self.device_table.item(row, 12)
+            if item is None or item.text() != online_state:
+                online_item = QTableWidgetItem(online_state)
+                self._set_table_item_color(online_item, online_state)
+                self.device_table.setItem(row, 12, online_item)
 
         self.recent_buffers[device_name].append(snapshot)
 
         idx = self.sample_index[device_name]
         self.sample_index[device_name] += 1
 
-        # v3.0 phase 3: store every numeric driver point for dynamic plotting.
+        # v3.0 phase 3: store numeric driver points for dynamic plotting.
+        # Windows performance guard: on 24 BMS with large point tables, appending
+        # every point for every hidden device can become more expensive than the
+        # Modbus polling itself. Keep full resolution for the currently visible
+        # device/page, and downsample hidden devices in performance mode.
         points = snapshot.get("points", {}) if isinstance(snapshot.get("points"), dict) else snapshot
-        for point_key, point_value in points.items():
-            if point_key in {"timestamp", "raw", "point_meta", "points"}:
-                continue
-            try:
-                numeric_value = float(point_value)
-            except (TypeError, ValueError):
-                continue
-            self.dynamic_point_buffers[device_name][str(point_key)].append((idx, numeric_value))
+        perf_mode = bool(getattr(self, "performance_mode_enabled", True))
+        visible_for_dynamic = (
+            self.current_curve_device == device_name and self._is_main_page_visible("Curves")
+        ) or (
+            hasattr(self, "driver_points_device_combo")
+            and self.driver_points_device_combo.currentText() == device_name
+            and self._is_main_page_visible("Driver Points")
+        )
+        dynamic_sample_stride = 1 if (not perf_mode or visible_for_dynamic) else int(getattr(self, "hidden_dynamic_point_stride", 5))
+        update_dynamic_points = (dynamic_sample_stride <= 1) or (idx % max(1, dynamic_sample_stride) == 0)
+        if update_dynamic_points:
+            for point_key, point_value in points.items():
+                if point_key in {"timestamp", "raw", "point_meta", "points"}:
+                    continue
+                try:
+                    numeric_value = float(point_value)
+                except (TypeError, ValueError):
+                    continue
+                self.dynamic_point_buffers[device_name][str(point_key)].append((idx, numeric_value))
 
-        # Heavy UI refresh is throttled; buffers still update at full sampling rate.
+        # Heavy UI refresh is throttled; strategy/latest_snapshots still update at full sampling rate.
 
         self.series_buffers[device_name]["soc"].append((idx, float(snapshot.get("soc", 0))))
         self.series_buffers[device_name]["system_voltage"].append(
@@ -212,16 +271,25 @@ class DataReceiveMixin:
         if hasattr(self, "_last_ui_refresh_time"):
             self._last_ui_refresh_time[device_name] = now
 
-        if self.current_curve_device == device_name:
-            self.refresh_curves(device_name)
+        if self.current_curve_device == device_name and self._is_main_page_visible("Curves"):
+            last_curve = getattr(self, "_last_curve_refresh_time", {}).get(device_name, 0.0) if hasattr(self, "_last_curve_refresh_time") else 0.0
+            curve_interval = float(getattr(self, "curve_refresh_interval", 5.0)) if getattr(self, "performance_mode_enabled", True) else interval
+            if now - last_curve >= curve_interval:
+                if hasattr(self, "_last_curve_refresh_time"):
+                    self._last_curve_refresh_time[device_name] = now
+                self.refresh_curves(device_name)
 
-        if self.current_detail_device == device_name:
+        if self.current_detail_device == device_name and self._is_main_page_visible("Details"):
             self.refresh_details(device_name)
 
-        if hasattr(self, "driver_points_device_combo") and self.driver_points_device_combo.currentText() == device_name:
+        if (
+            hasattr(self, "driver_points_device_combo")
+            and self.driver_points_device_combo.currentText() == device_name
+            and self._is_main_page_visible("Driver Points")
+        ):
             self.refresh_driver_points(device_name)
 
-        if self.current_alarm_device == device_name:
+        if self.current_alarm_device == device_name and self._is_main_page_visible("Alarms"):
             self.refresh_alarms(device_name)
 
     def on_curve_device_changed(self, device_name: str) -> None:
