@@ -18,7 +18,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '4.0'
+          python-version: '3.11'
 
       - name: Install dependencies
         shell: pwsh
@@ -94,11 +94,11 @@ jobs:
           if (Test-Path "ESS-AIO-windows-light.zip") {
             Remove-Item "ESS-AIO-windows-light.zip" -Force
           }
-          Compress-Archive -Path "dist/ESS-AIO/*" -DestinationPath "ESS-AIO-windows-light.zip" -Force
+          Compress-Archive -Path "dist/ESS-AIO/*" -DestinationPath "ESS-AIO-windows-light_v4.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ESS-AIO-windows-light
-          path: ESS-AIO-windows-light.zip
+          name: ESS-AIO-windows-light_v4
+          path: ESS-AIO-windows-light_v4.zip
           retention-days: 14
