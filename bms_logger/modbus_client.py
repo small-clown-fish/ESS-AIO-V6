@@ -273,6 +273,57 @@ class BmsModbusClient:
         return self.write_ems_cmd(self.EMS_CMD_POWER_OFF)
 
 
+
+    def wait_bms_power_on_state(self, expected: int, timeout: float = 30.0, poll_interval: float = 1.0) -> bool:
+        """Wait until 0x0301 reaches expected state.
+
+        This is intentionally implemented on the existing BMS polling worker's
+        client so bulk HV commands do not create a second TCP session to the
+        same BMS.
+        """
+        import time
+        expected = int(expected)
+        deadline = time.time() + max(0.1, float(timeout))
+        poll = max(0.2, float(poll_interval))
+        while time.time() < deadline:
+            value = self.read_bms_power_on()
+            if value == expected:
+                return True
+            time.sleep(poll)
+        return False
+
+    def hv_on_bms_only(self, timeout: float = 30.0, poll_interval: float = 1.0) -> bool:
+        """BMS-only HV ON sequence for bulk/all-online operations.
+
+        Sequence: verify 0x0302 == 1, write 0x0381 = 2, wait 0x0301 == 1,
+        then write 0x0381 = 1 (stay). It does not touch PCS or create extra
+        clients, so it is safe to enqueue on the existing BMS polling worker.
+        """
+        status = self.read_bms_status()
+        if status != 1:
+            raise RuntimeError(f"HV ON blocked: 0x0302={status}, expected 1")
+        if not self.write_ems_cmd_power_on():
+            raise RuntimeError("HV ON failed: write 0x0381=2 failed")
+        if not self.wait_bms_power_on_state(1, timeout=timeout, poll_interval=poll_interval):
+            raise RuntimeError("HV ON timeout: 0x0301 did not become 1")
+        if not self.write_ems_cmd_stay():
+            raise RuntimeError("HV ON failed: write 0x0381=1 stay failed")
+        return True
+
+    def hv_off_bms_only(self, timeout: float = 30.0, poll_interval: float = 1.0) -> bool:
+        """BMS-only HV OFF sequence for bulk/all-online operations.
+
+        Sequence: write 0x0381 = 3, wait 0x0301 == 0, then write
+        0x0381 = 1 (stay). It does not touch PCS or create extra clients.
+        """
+        if not self.write_ems_cmd_power_off():
+            raise RuntimeError("HV OFF failed: write 0x0381=3 failed")
+        if not self.wait_bms_power_on_state(0, timeout=timeout, poll_interval=poll_interval):
+            raise RuntimeError("HV OFF timeout: 0x0301 did not become 0")
+        if not self.write_ems_cmd_stay():
+            raise RuntimeError("HV OFF failed: write 0x0381=1 stay failed")
+        return True
+
     def _read_ascii_registers(self, address: int, count: int) -> str:
         regs = self._read_holding_block(address, count)
         if regs is None:

@@ -190,6 +190,8 @@ def _build_bms_control_column(self, parent: QVBoxLayout) -> None:
         hv_layout = QHBoxLayout(hv_group)
         self.hv_on_btn = QPushButton("HV On Workflow")
         self.hv_off_btn = QPushButton("HV Off Workflow")
+        self.hv_on_all_btn = QPushButton("HV ON All Online")
+        self.hv_off_all_btn = QPushButton("HV OFF All Online")
         self.hv_cancel_btn = QPushButton("Cancel HV Workflow")
         self.ignore_pcs_checks_checkbox = QCheckBox("Ignore PCS checks")
         self.ignore_pcs_checks_checkbox.setToolTip(
@@ -199,10 +201,14 @@ def _build_bms_control_column(self, parent: QVBoxLayout) -> None:
 
         self.hv_on_btn.clicked.connect(self.handle_hv_on)
         self.hv_off_btn.clicked.connect(self.handle_hv_off)
+        self.hv_on_all_btn.clicked.connect(self.handle_hv_on_all_online_bms)
+        self.hv_off_all_btn.clicked.connect(self.handle_hv_off_all_online_bms)
         self.hv_cancel_btn.clicked.connect(self.handle_cancel_hv_workflow)
 
         hv_layout.addWidget(self.hv_on_btn)
         hv_layout.addWidget(self.hv_off_btn)
+        hv_layout.addWidget(self.hv_on_all_btn)
+        hv_layout.addWidget(self.hv_off_all_btn)
         hv_layout.addWidget(self.hv_cancel_btn)
         hv_layout.addWidget(self.ignore_pcs_checks_checkbox)
         hv_layout.addStretch()
