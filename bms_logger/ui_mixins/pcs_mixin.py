@@ -469,12 +469,13 @@ class PcsConfigMixin:
             names.append(name)
         return names
 
-    def start_pcs_polling_by_name(self, name: str) -> None:
+    def start_pcs_polling_by_name(self, name: str, initial_delay: float = 0.0, refresh: bool = True) -> None:
         if not name or name not in getattr(self, "pcs_configs", {}):
             QMessageBox.warning(self, "Warning", f"PCS not found: {name}")
             return
         if name in getattr(self, "pcs_workers", {}):
-            self.log(f"[INFO] PCS already polling: {name}")
+            if refresh:
+                self.log(f"[INFO] PCS already polling: {name}")
             return
         cfg = self.get_pcs_config_by_name(name)
         client = self.create_pcs_client_for_pcs_name(name)
@@ -483,6 +484,11 @@ class PcsConfigMixin:
             QMessageBox.warning(self, "Warning", f"No readable PCS points configured for {name}.")
             return
         interval = float(cfg.get("poll_interval", cfg.get("interval", 2.0)))
+        try:
+            pcs_limit = int(getattr(self, "max_parallel_pcs_io", getattr(self, "max_parallel_bms_io", 10)))
+            PcsPollingWorker.configure_global_io_limit(pcs_limit if getattr(self, "large_site_mode_enabled", True) else 0)
+        except Exception:
+            pass
         worker = PcsPollingWorker(
             pcs_name=name,
             client=client,
@@ -491,11 +497,14 @@ class PcsConfigMixin:
             callback=lambda dn, data: self.bridge.pcs_data_received.emit(dn, data),
             error_callback=lambda dn, err: self.bridge.pcs_error_received.emit(dn, err),
             status_callback=lambda dn, status: self.bridge.task_status_received.emit(dn, status),
+            initial_delay=max(0.0, float(initial_delay or 0.0)),
         )
         self.pcs_workers[name] = worker
         worker.start()
-        self.log(f"[INFO] Started PCS polling: {name} ({len(point_names)} points, {interval}s)")
-        self.refresh_pcs_view()
+        delay_note = f", delay={float(initial_delay or 0.0):.1f}s" if float(initial_delay or 0.0) > 0 else ""
+        self.log(f"[INFO] Started PCS polling: {name} ({len(point_names)} points, {interval}s{delay_note})")
+        if refresh:
+            self.refresh_pcs_view()
 
     def stop_pcs_polling_by_name(self, name: str) -> None:
         worker = getattr(self, "pcs_workers", {}).pop(name, None)
@@ -533,10 +542,47 @@ class PcsConfigMixin:
         self.stop_pcs_polling_by_name(name)
 
     def start_all_pcs_polling(self) -> None:
+        """Start PCS polling in a staggered, Windows-friendly way.
+
+        BMS Start All already uses staggered startup. PCS used to launch all workers
+        immediately, which caused socket/connect storms and UI freeze on 40+ devices.
+        This schedules each PCS worker with its own initial delay and refreshes the PCS
+        table only once after the batch is queued.
+        """
+        names: list[str] = []
         for name in sorted(getattr(self, "pcs_configs", {}).keys()):
             cfg = self.pcs_configs.get(name, {})
-            if cfg.get("enabled", False):
-                self.start_pcs_polling_by_name(name)
+            if cfg.get("enabled", False) and name not in getattr(self, "pcs_workers", {}):
+                names.append(name)
+        if not names:
+            self.log("[INFO] No enabled PCS to connect, or all enabled PCS are already connected.")
+            return
+
+        stagger = float(getattr(self, "worker_start_stagger_seconds", 0.5) or 0.5)
+        if stagger < 0.1:
+            stagger = 0.1
+        try:
+            pcs_limit = int(getattr(self, "max_parallel_pcs_io", getattr(self, "max_parallel_bms_io", 10)))
+            PcsPollingWorker.configure_global_io_limit(pcs_limit if getattr(self, "large_site_mode_enabled", True) else 0)
+        except Exception:
+            pcs_limit = 0
+
+        for index, name in enumerate(names):
+            initial_delay = index * stagger
+            # Start the thread immediately, but its own run() sleeps before connecting.
+            # This avoids creating a long chain of UI timers and keeps startup responsive.
+            self.start_pcs_polling_by_name(name, initial_delay=initial_delay, refresh=False)
+
+        self.log(
+            f"[INFO] Connect All PCS queued for {len(names)} devices; "
+            f"stagger={stagger:.2f}s, max_parallel_pcs_io={pcs_limit or 'unlimited'}"
+        )
+        self.refresh_pcs_view()
+        # Refresh again after the last scheduled worker has had time to connect/fail.
+        try:
+            QTimer.singleShot(int((len(names) * stagger + 2.0) * 1000), self.refresh_pcs_view)
+        except Exception:
+            pass
 
     def stop_all_pcs_polling(self) -> None:
         for name in list(getattr(self, "pcs_workers", {}).keys()):

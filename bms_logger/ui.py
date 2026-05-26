@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import threading
 from .service import BmsPcsService
 from .app_facade import AppFacade
 from .controllers import DeviceController, PcsController, ProfileController, StrategyController, AuditController, ServiceActionController
@@ -94,11 +95,22 @@ class MainWindow(
         self.bridge.heartbeat_written.connect(self.on_heartbeat_written)
         self.bridge.heartbeat_error.connect(self.on_heartbeat_error)
 
+        # Large-site mode: worker threads put latest snapshots into a cache.
+        # The Qt main thread drains the cache on a timer instead of handling one
+        # signal per device per polling cycle. This reduces Windows/PyInstaller UI
+        # freezes when 40-60 devices are online.
+        self._pending_bms_snapshots: Dict[str, Dict[str, Any]] = {}
+        self._pending_bms_snapshot_lock = threading.Lock()
+        self._pending_bms_snapshot_max_per_flush: int = 80
+
         self.device_workers: Dict[str, DeviceWorker] = {}
         self.pcs_workers: Dict[str, PcsPollingWorker] = {}
         self.task_status_store = TaskStatusStore()
         self.task_status_rows: Dict[str, int] = {}
-        self.worker_start_stagger_seconds: float = 0.25
+        self.worker_start_stagger_seconds: float = 0.50
+        self.large_site_mode_enabled: bool = True
+        self.max_parallel_bms_io: int = 10
+        DeviceWorker.configure_global_io_limit(self.max_parallel_bms_io)
         self.performance_mode_enabled: bool = True
         self.ui_refresh_interval: float = 3.0
         self.curve_refresh_interval: float = 5.0
@@ -107,6 +119,8 @@ class MainWindow(
         self._last_curve_refresh_time: Dict[str, float] = {}
         self._last_status_refresh_time: float = 0.0
         self._last_ui_refresh_time: Dict[str, float] = {}
+        self.hidden_dynamic_point_stride: int = 10
+        self.max_driver_points_visible_rows: int = 300
         self.heartbeat_workers: Dict[str, HeartbeatWorker] = {}
         self.hv_workers: Dict[str, HvWorkflowWorker] = {}
         self.charge_discharge_workers: Dict[str, Any] = {}
@@ -139,6 +153,11 @@ class MainWindow(
         self.fleet_status_timer.start()
         self._fleet_status_refresh_busy = False
         self._last_fleet_status_text = ""
+
+        self.bms_snapshot_flush_timer = QTimer(self)
+        self.bms_snapshot_flush_timer.setInterval(1000)
+        self.bms_snapshot_flush_timer.timeout.connect(self._flush_pending_bms_snapshots)
+        self.bms_snapshot_flush_timer.start()
 
         self.device_rows: Dict[str, int] = {}
         self.devices: List[Dict[str, Any]] = []

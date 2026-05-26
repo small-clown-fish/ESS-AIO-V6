@@ -131,6 +131,17 @@ class ConfigMixin:
             self.worker_start_stagger_seconds = float(
                 data.get("worker_start_stagger_seconds", self.worker_start_stagger_seconds)
             )
+            self.large_site_mode_enabled = bool(data.get("large_site_mode_enabled", getattr(self, "large_site_mode_enabled", True)))
+            self.max_parallel_bms_io = int(data.get("max_parallel_bms_io", getattr(self, "max_parallel_bms_io", 10)))
+            try:
+                from ..worker import DeviceWorker
+            except Exception:
+                try:
+                    from bms_logger.worker import DeviceWorker
+                except Exception:
+                    DeviceWorker = None  # type: ignore
+            if DeviceWorker is not None:
+                DeviceWorker.configure_global_io_limit(self.max_parallel_bms_io if self.large_site_mode_enabled else 0)
             self.performance_mode_enabled = bool(data.get("performance_mode_enabled", getattr(self, "performance_mode_enabled", True)))
             self.ui_refresh_interval = float(data.get("ui_refresh_interval", self.ui_refresh_interval))
             self.curve_refresh_interval = float(data.get("curve_refresh_interval", getattr(self, "curve_refresh_interval", 5.0)))
@@ -165,6 +176,8 @@ class ConfigMixin:
             "pcs_control_ui_enabled": self.pcs_control_ui_enabled,
             "fake_mode": self.fake_mode,
             "worker_start_stagger_seconds": self.worker_start_stagger_seconds,
+            "large_site_mode_enabled": getattr(self, "large_site_mode_enabled", True),
+            "max_parallel_bms_io": getattr(self, "max_parallel_bms_io", 10),
             "performance_mode_enabled": getattr(self, "performance_mode_enabled", True),
             "ui_refresh_interval": self.ui_refresh_interval,
             "curve_refresh_interval": getattr(self, "curve_refresh_interval", 5.0),

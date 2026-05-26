@@ -17,34 +17,48 @@ from PySide6.QtGui import QColor
 
 class AlarmMixin:
     def refresh_alarms(self, device_name: str) -> None:
+        if hasattr(self, "_is_main_page_visible") and not self._is_main_page_visible("Alarms"):
+            return
         self.current_alarm_device = device_name
-        self.alarm_device_label.setText(f"Current device: {device_name}")
+        label_text = f"Current device: {device_name}"
+        if self.alarm_device_label.text() != label_text:
+            self.alarm_device_label.setText(label_text)
 
         snapshot = self.latest_snapshots.get(device_name, {})
         parser = self.get_alarm_parser_for_device(device_name) if hasattr(self, "get_alarm_parser_for_device") else self.alarm_parser
 
-        for i, addr in enumerate(range(0x0000, 0x0020)):
-            key = f"alarm_0x{addr:04x}"
-            value = snapshot.get(key, "-")
+        def _set(row: int, col: int, value: object) -> None:
+            item = self.alarm_table.item(row, col)
+            text = str(value)
+            if item is not None and item.text() != text:
+                item.setText(text)
 
-            self.alarm_table.item(i, 1).setText(str(value))
+        self.alarm_table.setUpdatesEnabled(False)
+        try:
+            for i, addr in enumerate(range(0x0000, 0x0020)):
+                key = f"alarm_0x{addr:04x}"
+                value = snapshot.get(key, "-")
 
-            if isinstance(value, int):
-                self.alarm_table.item(i, 2).setText(f"0x{value:04x}")
+                _set(i, 1, value)
 
-                active_bits = []
-                addr_key = f"0x{addr:04x}"
+                if isinstance(value, int):
+                    _set(i, 2, f"0x{value:04x}")
 
-                for bit in range(16):
-                    if value & (1 << bit):
-                        bit_key = f"bit{bit}"
-                        name = parser.alarm_map.get(addr_key, {}).get(bit_key, "Unknown")
-                        active_bits.append(f"Bit{bit}: {name}")
+                    active_bits = []
+                    addr_key = f"0x{addr:04x}"
 
-                self.alarm_table.item(i, 3).setText("; ".join(active_bits) if active_bits else "-")
-            else:
-                self.alarm_table.item(i, 2).setText("-")
-                self.alarm_table.item(i, 3).setText("-")
+                    for bit in range(16):
+                        if value & (1 << bit):
+                            bit_key = f"bit{bit}"
+                            name = parser.alarm_map.get(addr_key, {}).get(bit_key, "Unknown")
+                            active_bits.append(f"Bit{bit}: {name}")
+
+                    _set(i, 3, "; ".join(active_bits) if active_bits else "-")
+                else:
+                    _set(i, 2, "-")
+                    _set(i, 3, "-")
+        finally:
+            self.alarm_table.setUpdatesEnabled(True)
 
     def handle_load_alarm_history_csv(self) -> None:
         path, _ = QFileDialog.getOpenFileName(

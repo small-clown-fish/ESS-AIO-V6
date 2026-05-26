@@ -377,7 +377,7 @@ class UiDeviceMixin:
             device_name=name,
             client=client,
             interval=float(dev.get("interval", 2.0)),
-            callback=lambda dn, data: self.bridge.data_received.emit(dn, data),
+            callback=lambda dn, data: self._enqueue_bms_snapshot_from_worker(dn, data),
             error_callback=lambda dn, err: self.bridge.error_received.emit(dn, err),
             status_callback=lambda dn, status: self.bridge.task_status_received.emit(dn, status),
             initial_delay=initial_delay,
@@ -390,7 +390,8 @@ class UiDeviceMixin:
             self.device_table.item(row, 11).setText("Running")
         self.last_sampling_status = "Running"
         self.refresh_global_status_bar()
-        self.log(f"[INFO] Started BMS device: {name}")
+        if not getattr(self, "_bulk_starting_devices", False):
+            self.log(f"[INFO] Started BMS device: {name}")
 
     def stop_device_by_name(self, name: str) -> None:
         worker = self.device_workers.pop(name, None)
@@ -441,12 +442,19 @@ class UiDeviceMixin:
             QMessageBox.information(self, "Info", "No devices configured.")
             return
 
-        for dev in self.devices:
-            self.start_device_by_name(dev["name"])
+        self._bulk_starting_devices = True
+        try:
+            for index, dev in enumerate(self.devices):
+                # Start workers in a staggered pattern. DeviceWorker also applies
+                # its own initial_delay; this keeps Windows socket/connect bursts
+                # from freezing the UI when starting 40-60 devices.
+                self.start_device_by_name(dev["name"])
+        finally:
+            self._bulk_starting_devices = False
 
         self.last_sampling_status = "Running"
         self.refresh_global_status_bar()
-        self.log("[INFO] Started all BMS devices.")
+        self.log(f"[INFO] Start All queued for {len(self.devices)} BMS devices; stagger={getattr(self, 'worker_start_stagger_seconds', 0.5):.2f}s, max_parallel_io={getattr(self, 'max_parallel_bms_io', 10)}")
 
     def stop_all(self) -> None:
         for _, worker in list(self.device_workers.items()):

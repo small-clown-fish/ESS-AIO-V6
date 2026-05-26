@@ -5,6 +5,7 @@ import csv
 from PySide6.QtCharts import QChart, QChartView, QLineSeries, QValueAxis
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction
+from ..ui_table_models import SnapshotTableModel
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSpinBox,
+    QTableView,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -95,40 +97,42 @@ def _build_overview_tab(self, tabs: QTabWidget) -> None:
         device_group = QGroupBox("Device Status")
         device_layout = QVBoxLayout(device_group)
 
-        self.overview_device_table = QTableWidget(0, 7)
-        self.overview_device_table.setHorizontalHeaderLabels(
-            [
-                "Device",
-                "Online",
-                "Run State",
-                "SOC(%)",
-                "Voltage(V)",
-                "Current(A)",
-                "Power(kW)",
-            ]
-        )
+        self.overview_device_model = SnapshotTableModel([
+            "Device",
+            "Online",
+            "Run State",
+            "SOC(%)",
+            "Voltage(V)",
+            "Current(A)",
+            "Power(kW)",
+        ], self)
+        self.overview_device_table = QTableView()
+        self.overview_device_table.setModel(self.overview_device_model)
         self.overview_device_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.overview_device_table.verticalHeader().setDefaultSectionSize(28)
+        self.overview_device_table.setAlternatingRowColors(True)
+        self.overview_device_table.setSortingEnabled(False)
 
         device_layout.addWidget(self.overview_device_table)
         overview_layout.addWidget(device_group)
         cluster_group = QGroupBox("Cluster Status")
         cluster_layout = QVBoxLayout(cluster_group)
 
-        self.overview_cluster_table = QTableWidget(0, 7)
-        self.overview_cluster_table.setHorizontalHeaderLabels(
-            [
-                "Cluster",
-                "BMS Count",
-                "PCS",
-                "Max Cell V(mV)",
-                "Min Cell V(mV)",
-                "Derating",
-                "Cutoff",
-            ]
-        )
+        self.overview_cluster_model = SnapshotTableModel([
+            "Cluster",
+            "BMS Count",
+            "PCS",
+            "Max Cell V(mV)",
+            "Min Cell V(mV)",
+            "Derating",
+            "Cutoff",
+        ], self)
+        self.overview_cluster_table = QTableView()
+        self.overview_cluster_table.setModel(self.overview_cluster_model)
         self.overview_cluster_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.overview_cluster_table.verticalHeader().setDefaultSectionSize(28)
+        self.overview_cluster_table.setAlternatingRowColors(True)
+        self.overview_cluster_table.setSortingEnabled(False)
 
         cluster_layout.addWidget(self.overview_cluster_table)
         overview_layout.addWidget(cluster_group)

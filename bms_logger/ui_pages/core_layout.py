@@ -145,6 +145,8 @@ def _build_ui(self) -> None:
         body.addWidget(self.page_stack, 1)
 
         self.nav_list.currentRowChanged.connect(self.page_stack.setCurrentIndex)
+        if hasattr(self, "_on_main_page_changed"):
+            self.nav_list.currentRowChanged.connect(self._on_main_page_changed)
         tabs = _NavTabsAdapter(self.nav_list, self.page_stack)
 
         # Navigation order is grouped by workflow:

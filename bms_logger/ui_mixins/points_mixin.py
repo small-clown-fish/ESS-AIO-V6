@@ -29,8 +29,12 @@ class PointsMixin:
     def refresh_driver_points(self, device_name: str) -> None:
         if not hasattr(self, "driver_points_table"):
             return
+        if hasattr(self, "_is_main_page_visible") and not self._is_main_page_visible("Driver Points"):
+            return
 
-        self.driver_points_device_label.setText(f"Current device: {device_name or '-'}")
+        label_text = f"Current device: {device_name or '-'}"
+        if self.driver_points_device_label.text() != label_text:
+            self.driver_points_device_label.setText(label_text)
         snapshot = self.latest_snapshots.get(device_name, {}) if device_name else {}
         points = snapshot.get("points", {}) if isinstance(snapshot.get("points"), dict) else {}
         point_meta = snapshot.get("point_meta", {}) if isinstance(snapshot.get("point_meta"), dict) else {}
@@ -65,17 +69,31 @@ class PointsMixin:
                 continue
             rows.append((favorite_mark, key, value, unit, address, label, category))
 
-        self.driver_points_table.setRowCount(0)
-        for row_values in rows:
-            row = self.driver_points_table.rowCount()
-            self.driver_points_table.insertRow(row)
-            for col, value in enumerate(row_values):
-                item = QTableWidgetItem(str(value))
-                if col == 0 and value == "★":
-                    item.setForeground(QColor("#f59e0b"))
-                if col == 6 and value == "Alarm/Fault":
-                    item.setForeground(QColor("#ef4444"))
-                self.driver_points_table.setItem(row, col, item)
+        if getattr(self, "performance_mode_enabled", True) and not filter_text and category_filter == "All":
+            # On huge point tables, showing thousands of points continuously is a
+            # UI killer. Keep a useful sample unless operator filters/searches.
+            rows = rows[:300]
+
+        signature = (device_name, filter_text, category_filter, tuple(rows[:300]))
+        if getattr(self, "_last_driver_points_signature", None) == signature:
+            return
+        self._last_driver_points_signature = signature
+
+        self.driver_points_table.setUpdatesEnabled(False)
+        try:
+            self.driver_points_table.setRowCount(0)
+            for row_values in rows:
+                row = self.driver_points_table.rowCount()
+                self.driver_points_table.insertRow(row)
+                for col, value in enumerate(row_values):
+                    item = QTableWidgetItem(str(value))
+                    if col == 0 and value == "★":
+                        item.setForeground(QColor("#f59e0b"))
+                    if col == 6 and value == "Alarm/Fault":
+                        item.setForeground(QColor("#ef4444"))
+                    self.driver_points_table.setItem(row, col, item)
+        finally:
+            self.driver_points_table.setUpdatesEnabled(True)
 
     def refresh_current_driver_points(self) -> None:
         if hasattr(self, "driver_points_device_combo"):

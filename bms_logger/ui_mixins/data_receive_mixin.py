@@ -17,6 +17,56 @@ from PySide6.QtGui import QColor
 
 class DataReceiveMixin:
 
+    def _enqueue_bms_snapshot_from_worker(self, device_name: str, snapshot: Dict[str, Any]) -> None:
+        """Thread-safe BMS snapshot handoff used by DeviceWorker.
+
+        In large-site mode we coalesce snapshots by device and let the Qt main
+        thread process the newest value on a timer. This avoids one queued Qt
+        signal per device per poll cycle.
+        """
+        lock = getattr(self, "_pending_bms_snapshot_lock", None)
+        pending = getattr(self, "_pending_bms_snapshots", None)
+        if lock is None or pending is None:
+            # Fallback for tests/older wiring.
+            try:
+                self.bridge.data_received.emit(device_name, snapshot)
+            except Exception:
+                pass
+            return
+        try:
+            with lock:
+                pending[str(device_name)] = dict(snapshot)
+        except Exception:
+            try:
+                self.bridge.data_received.emit(device_name, snapshot)
+            except Exception:
+                pass
+
+    def _flush_pending_bms_snapshots(self) -> None:
+        lock = getattr(self, "_pending_bms_snapshot_lock", None)
+        pending = getattr(self, "_pending_bms_snapshots", None)
+        if lock is None or pending is None:
+            return
+        try:
+            with lock:
+                if not pending:
+                    return
+                max_items = int(getattr(self, "_pending_bms_snapshot_max_per_flush", 80))
+                items = list(pending.items())[:max_items]
+                for key, _ in items:
+                    pending.pop(key, None)
+        except Exception:
+            return
+
+        for device_name, snapshot in items:
+            try:
+                self.on_data_received(device_name, snapshot)
+            except Exception as exc:
+                try:
+                    self.log(f"[ERROR] BMS snapshot flush failed for {device_name}: {exc}")
+                except Exception:
+                    pass
+
     def _current_main_page_text(self) -> str:
         try:
             item = self.nav_list.currentItem()
@@ -27,6 +77,56 @@ class DataReceiveMixin:
     def _is_main_page_visible(self, *names: str) -> bool:
         current = self._current_main_page_text().lower()
         return any(str(name).lower() in current for name in names)
+
+
+    def _on_main_page_changed(self, index: int) -> None:
+        """Refresh only the newly visible heavy page once.
+
+        Hidden pages deliberately do not repaint in large-site/performance mode.
+        When the operator navigates to a page, catch it up from latest snapshots.
+        """
+        _ = index
+        try:
+            page = self._current_main_page_text().lower()
+            device = None
+            if "detail" in page:
+                device = getattr(self, "current_detail_device", None)
+                if device:
+                    self.refresh_details(device)
+            elif "alarm" in page and "analysis" not in page:
+                device = getattr(self, "current_alarm_device", None)
+                if device:
+                    self.refresh_alarms(device)
+            elif "curve" in page:
+                device = getattr(self, "current_curve_device", None)
+                if device:
+                    self.refresh_curves(device)
+            elif "driver" in page:
+                if hasattr(self, "driver_points_device_combo"):
+                    device = self.driver_points_device_combo.currentText()
+                    if device:
+                        self.refresh_driver_points(device)
+            elif "overview" in page:
+                self.refresh_overview()
+            elif "pcs devices" in page:
+                if hasattr(self, "refresh_pcs_view"):
+                    self.refresh_pcs_view(full=False)
+        except Exception as exc:
+            try:
+                self.log(f"[WARN] Visible page refresh skipped: {exc}")
+            except Exception:
+                pass
+
+    def _table_set_text_if_changed(self, table, row: int, col: int, text: object, color_value: object | None = None) -> None:
+        item = table.item(row, col)
+        value = str(text)
+        if item is None:
+            item = QTableWidgetItem(value)
+            table.setItem(row, col, item)
+        elif item.text() != value:
+            item.setText(value)
+        if color_value is not None and hasattr(self, "_set_table_item_color"):
+            self._set_table_item_color(item, str(color_value))
 
     def on_error_received(self, device_name: str, error: str) -> None:
         import time
@@ -59,7 +159,8 @@ class DataReceiveMixin:
         if update_ui and self.current_curve_device == device_name and self._is_main_page_visible("Curves"):
             self.refresh_curves(device_name)
 
-        self.log(f"[ERROR] {device_name}: {error}")
+        if update_ui:
+            self.log(f"[ERROR] {device_name}: {error}")
 
     def on_heartbeat_written(self, device_name: str, value: int) -> None:
         # Heartbeat can arrive at 1 Hz per device. Do not repaint global status on
@@ -172,32 +273,36 @@ class DataReceiveMixin:
 
         row = self.device_rows.get(device_name)
         if row is not None and update_table:
-            def _set_text(col: int, value: object) -> None:
-                item = self.device_table.item(row, col)
-                text = str(value)
-                if item is None:
-                    self.device_table.setItem(row, col, QTableWidgetItem(text))
-                elif item.text() != text:
-                    item.setText(text)
+            self.device_table.setUpdatesEnabled(False)
+            try:
+                def _set_text(col: int, value: object) -> None:
+                    item = self.device_table.item(row, col)
+                    text = str(value)
+                    if item is None:
+                        self.device_table.setItem(row, col, QTableWidgetItem(text))
+                    elif item.text() != text:
+                        item.setText(text)
 
-            _set_text(5, snapshot.get("bms_status", "-"))
-            _set_text(6, snapshot.get("number_of_racks", "-"))
-            _set_text(7, snapshot.get("soc", "-"))
-            _set_text(8, snapshot.get("system_voltage", "-"))
-            _set_text(9, snapshot.get("system_current", "-"))
-            _set_text(10, snapshot.get("system_power", "-"))
+                _set_text(5, snapshot.get("bms_status", "-"))
+                _set_text(6, snapshot.get("number_of_racks", "-"))
+                _set_text(7, snapshot.get("soc", "-"))
+                _set_text(8, snapshot.get("system_voltage", "-"))
+                _set_text(9, snapshot.get("system_current", "-"))
+                _set_text(10, snapshot.get("system_power", "-"))
 
-            item = self.device_table.item(row, 11)
-            if item is None or item.text() != "Running":
-                run_item = QTableWidgetItem("Running")
-                self._set_table_item_color(run_item, "Running")
-                self.device_table.setItem(row, 11, run_item)
+                item = self.device_table.item(row, 11)
+                if item is None or item.text() != "Running":
+                    run_item = QTableWidgetItem("Running")
+                    self._set_table_item_color(run_item, "Running")
+                    self.device_table.setItem(row, 11, run_item)
 
-            item = self.device_table.item(row, 12)
-            if item is None or item.text() != online_state:
-                online_item = QTableWidgetItem(online_state)
-                self._set_table_item_color(online_item, online_state)
-                self.device_table.setItem(row, 12, online_item)
+                item = self.device_table.item(row, 12)
+                if item is None or item.text() != online_state:
+                    online_item = QTableWidgetItem(online_state)
+                    self._set_table_item_color(online_item, online_state)
+                    self.device_table.setItem(row, 12, online_item)
+            finally:
+                self.device_table.setUpdatesEnabled(True)
 
         self.recent_buffers[device_name].append(snapshot)
 

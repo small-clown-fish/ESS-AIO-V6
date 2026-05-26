@@ -42,7 +42,16 @@ class StatusMixin:
         self._set_label_status_color(self.status_hv_label, self.last_hv_status)
         self._set_label_status_color(self.status_pcs_label, self.status_pcs_label.text())
         self._set_label_status_color(self.status_cutoff_label, self.status_cutoff_label.text())
-        self.refresh_overview()
+
+        # Overview table repaint can be heavy on Windows; update it at the
+        # configured status cadence and only when the page is visible.
+        import time
+        now = time.time()
+        last = float(getattr(self, "_last_overview_status_refresh", 0.0))
+        interval = float(getattr(self, "status_refresh_interval", 5.0))
+        if now - last >= interval:
+            self._last_overview_status_refresh = now
+            self.refresh_overview()
 
     def _set_table_item_color(self, item: QTableWidgetItem, value: str) -> None:
         text = str(value).lower()
@@ -93,8 +102,20 @@ class StatusMixin:
 
         return max(max_list), min(min_list)
 
+    def _set_label_text_if_changed(self, label, value: object) -> None:
+        text = str(value)
+        try:
+            if label.text() != text:
+                label.setText(text)
+        except Exception:
+            pass
+
     def refresh_overview(self) -> None:
         if not hasattr(self, "overview_total_devices_label"):
+            return
+        # Avoid doing overview work while the overview page is hidden. The data
+        # cache still updates; the model catches up when the page becomes visible.
+        if hasattr(self, "_is_main_page_visible") and not self._is_main_page_visible("Overview"):
             return
 
         total_devices = len(self.devices)
@@ -106,12 +127,12 @@ class StatusMixin:
             if item is not None and item.text() == "Online":
                 online_devices += 1
 
-        self.overview_total_devices_label.setText(str(total_devices))
-        self.overview_running_devices_label.setText(str(running_devices))
-        self.overview_online_devices_label.setText(str(online_devices))
-        self.overview_sampling_label.setText(self.last_sampling_status)
-        self.overview_heartbeat_label.setText(self.last_heartbeat_status)
-        self.overview_hv_label.setText(self.last_hv_status)
+        self._set_label_text_if_changed(self.overview_total_devices_label, total_devices)
+        self._set_label_text_if_changed(self.overview_running_devices_label, running_devices)
+        self._set_label_text_if_changed(self.overview_online_devices_label, online_devices)
+        self._set_label_text_if_changed(self.overview_sampling_label, self.last_sampling_status)
+        self._set_label_text_if_changed(self.overview_heartbeat_label, self.last_heartbeat_status)
+        self._set_label_text_if_changed(self.overview_hv_label, self.last_hv_status)
 
         active_cutoff = []
         for dev_name, states in self.cutoff_alarm_states.items():
@@ -120,87 +141,97 @@ class StatusMixin:
             if states.get("discharge_cutoff", False):
                 active_cutoff.append(f"{dev_name}: discharge")
 
-        self.overview_cutoff_label.setText("; ".join(active_cutoff) if active_cutoff else "Normal")
-        self.overview_last_error_label.setText(self.last_error_message)
+        cutoff_text = "; ".join(active_cutoff) if active_cutoff else "Normal"
+        self._set_label_text_if_changed(self.overview_cutoff_label, cutoff_text)
+        self._set_label_text_if_changed(self.overview_last_error_label, self.last_error_message)
 
-        if hasattr(self, "overview_device_table"):
-            self.overview_device_table.setRowCount(0)
+        device_rows = []
+        for dev in self.devices:
+            name = dev["name"]
+            device_row = self.device_rows.get(name)
+            snapshot = self.latest_snapshots.get(name, {})
 
-            for dev in self.devices:
-                name = dev["name"]
-                row_idx = self.overview_device_table.rowCount()
-                self.overview_device_table.insertRow(row_idx)
+            online = "-"
+            run_state = "-"
+            if device_row is not None:
+                online_item = self.device_table.item(device_row, 12)
+                run_item = self.device_table.item(device_row, 11)
+                if online_item is not None:
+                    online = online_item.text()
+                if run_item is not None:
+                    run_state = run_item.text()
 
-                device_row = self.device_rows.get(name)
-                snapshot = self.latest_snapshots.get(name, {})
+            device_rows.append([
+                name,
+                online,
+                run_state,
+                snapshot.get("soc", "-"),
+                snapshot.get("system_voltage", "-"),
+                snapshot.get("system_current", "-"),
+                snapshot.get("system_power", "-"),
+            ])
 
-                online = "-"
-                run_state = "-"
+        if hasattr(self, "overview_device_model"):
+            self.overview_device_model.set_rows(device_rows)
+        elif hasattr(self, "overview_device_table"):
+            # Legacy fallback, diff-style rather than clear/rebuild.
+            self.overview_device_table.setUpdatesEnabled(False)
+            try:
+                self.overview_device_table.setRowCount(len(device_rows))
+                for row_idx, values in enumerate(device_rows):
+                    for col, value in enumerate(values):
+                        text = str(value)
+                        item = self.overview_device_table.item(row_idx, col)
+                        if item is None:
+                            item = QTableWidgetItem(text)
+                            self.overview_device_table.setItem(row_idx, col, item)
+                        elif item.text() != text:
+                            item.setText(text)
+                        if col in [1, 2]:
+                            self._set_table_item_color(item, text)
+            finally:
+                self.overview_device_table.setUpdatesEnabled(True)
 
-                if device_row is not None:
-                    online_item = self.device_table.item(device_row, 12)
-                    run_item = self.device_table.item(device_row, 11)
-
-                    if online_item is not None:
-                        online = online_item.text()
-                    if run_item is not None:
-                        run_state = run_item.text()
-
-                values = [
-                    name,
-                    online,
-                    run_state,
-                    str(snapshot.get("soc", "-")),
-                    str(snapshot.get("system_voltage", "-")),
-                    str(snapshot.get("system_current", "-")),
-                    str(snapshot.get("system_power", "-")),
-                ]
-
-                for col, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-
-                    if col in [1, 2]:  # Online / Run State
-                        self._set_table_item_color(item, value)
-
-                    self.overview_device_table.setItem(row_idx, col, item)
-
-        if hasattr(self, "overview_cluster_table") and hasattr(self, "site"):
-            self.overview_cluster_table.setRowCount(0)
-
+        cluster_rows = []
+        if hasattr(self, "site"):
             for cluster in self.site.clusters:
-                row_idx = self.overview_cluster_table.rowCount()
-                self.overview_cluster_table.insertRow(row_idx)
-
                 max_v, min_v = self._get_cluster_voltage_stats_for_ui(cluster)
-
-                pcs_name = cluster.pcs_device.name if cluster.pcs_device else "-"
+                pcs_name = cluster.pcs_device.name if getattr(cluster, "pcs_device", None) else "-"
                 derating_state = self.derating_state.get(cluster.name, {})
                 cutoff_state = self.cutoff_alarm_states.get(cluster.name, {})
-
                 derating_text = "Active" if derating_state.get("active", False) else "Normal"
-
                 active_cutoffs = []
                 if cutoff_state.get("charge_cutoff", False):
                     active_cutoffs.append("Charge")
                 if cutoff_state.get("discharge_cutoff", False):
                     active_cutoffs.append("Discharge")
                 cutoff_text = ", ".join(active_cutoffs) if active_cutoffs else "Normal"
-
-                values = [
+                cluster_rows.append([
                     cluster.name,
-                    str(len(cluster.bms_devices)),
+                    len(cluster.bms_devices),
                     pcs_name,
-                    str(max_v),
-                    str(min_v),
+                    max_v,
+                    min_v,
                     derating_text,
                     cutoff_text,
-                ]
+                ])
 
-                for col, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-
-                    if col in [5, 6]:
-                        self._set_table_item_color(item, value)
-
-                    self.overview_cluster_table.setItem(row_idx, col, item)
-
+        if hasattr(self, "overview_cluster_model"):
+            self.overview_cluster_model.set_rows(cluster_rows)
+        elif hasattr(self, "overview_cluster_table"):
+            self.overview_cluster_table.setUpdatesEnabled(False)
+            try:
+                self.overview_cluster_table.setRowCount(len(cluster_rows))
+                for row_idx, values in enumerate(cluster_rows):
+                    for col, value in enumerate(values):
+                        text = str(value)
+                        item = self.overview_cluster_table.item(row_idx, col)
+                        if item is None:
+                            item = QTableWidgetItem(text)
+                            self.overview_cluster_table.setItem(row_idx, col, item)
+                        elif item.text() != text:
+                            item.setText(text)
+                        if col in [5, 6]:
+                            self._set_table_item_color(item, text)
+            finally:
+                self.overview_cluster_table.setUpdatesEnabled(True)

@@ -42,7 +42,7 @@ def _build_settings_tab(self, tabs: QTabWidget) -> None:
         header_row = QHBoxLayout()
         title_label = QLabel("Runtime Settings")
         title_label.setObjectName("PageTitle")
-        hint_label = QLabel("Grouped parameters for communication, protection, power control, and logging.")
+        hint_label = QLabel("Only active runtime settings are shown by default. Legacy strategy/protection settings are kept in config but hidden from this page.")
         hint_label.setObjectName("PageHint")
         header_row.addWidget(title_label)
         header_row.addSpacing(16)
@@ -177,6 +177,16 @@ def _build_settings_tab(self, tabs: QTabWidget) -> None:
         self.performance_mode_combo.setCurrentText("Enabled" if getattr(self, "performance_mode_enabled", True) else "Disabled")
         self.performance_mode_combo.setToolTip("Windows performance mode lowers UI/log/curve refresh pressure without changing Modbus sampling.")
 
+        self.large_site_mode_combo = QComboBox()
+        self.large_site_mode_combo.addItems(["Enabled", "Disabled"])
+        self.large_site_mode_combo.setCurrentText("Enabled" if getattr(self, "large_site_mode_enabled", True) else "Disabled")
+        self.large_site_mode_combo.setToolTip("Limits concurrent BMS Modbus IO and batches UI snapshot delivery for 40-60 device sites.")
+
+        self.max_parallel_bms_io_spin = QSpinBox()
+        self.max_parallel_bms_io_spin.setRange(1, 64)
+        self.max_parallel_bms_io_spin.setValue(int(getattr(self, "max_parallel_bms_io", 10)))
+        self.max_parallel_bms_io_spin.setToolTip("Maximum BMS connect/read/write operations allowed at the same time. 8-12 is recommended on Windows.")
+
         self.ui_refresh_interval_spin = QDoubleSpinBox()
         self.ui_refresh_interval_spin.setRange(0.2, 30.0)
         self.ui_refresh_interval_spin.setDecimals(1)
@@ -260,6 +270,8 @@ def _build_settings_tab(self, tabs: QTabWidget) -> None:
 
         scheduler_card = make_card("Scheduler / Performance", [
             ("Performance Mode", self.performance_mode_combo),
+            ("Large Site Mode", self.large_site_mode_combo),
+            ("Max Parallel BMS IO", self.max_parallel_bms_io_spin),
             ("Start Stagger", self.worker_stagger_spin),
             ("UI Refresh", self.ui_refresh_interval_spin),
             ("Curve Refresh", self.curve_refresh_interval_spin),
@@ -267,18 +279,28 @@ def _build_settings_tab(self, tabs: QTabWidget) -> None:
             ("Log Flush", self.log_flush_interval_spin),
         ])
 
+        # Keep only currently active settings visible.  Older cutoff/derating/tracking
+        # widgets are still created above so existing runtime_config values remain
+        # loadable/savable, but they are no longer shown because Cluster Strategy
+        # now owns those controls.
         grid.addWidget(runtime_card, 0, 0)
-        grid.addWidget(cutoff_card, 0, 1)
-        grid.addWidget(derating_card, 1, 0)
-        grid.addWidget(tracking_card, 1, 1)
-        grid.addWidget(pcs_card, 2, 0)
-        grid.addWidget(history_card, 2, 1)
-        grid.addWidget(scheduler_card, 3, 0)
+        grid.addWidget(scheduler_card, 0, 1)
+
+        legacy_note = QLabel(
+            "Legacy Cutoff / Derating / Power Tracking / PCS Protection settings are hidden here. "
+            "Use Cluster Strategy for power/cutoff behavior; use PCS Control for PCS operations."
+        )
+        legacy_note.setWordWrap(True)
+        legacy_note.setObjectName("PageHint")
+        grid.addWidget(legacy_note, 1, 0, 1, 2)
 
         settings_layout.addLayout(grid)
 
         action_row = QHBoxLayout()
         action_row.addStretch()
+        self.runtime_apply_status_label = QLabel("-")
+        self.runtime_apply_status_label.setObjectName("PageHint")
+        action_row.addWidget(self.runtime_apply_status_label)
         self.apply_runtime_params_btn = QPushButton("Apply Runtime Params")
         self.apply_runtime_params_btn.clicked.connect(self.apply_runtime_params)
         self.apply_runtime_params_btn.setMinimumWidth(190)

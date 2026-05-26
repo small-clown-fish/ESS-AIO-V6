@@ -26,7 +26,39 @@ class DeviceWorker(threading.Thread):
     v3.0 phase 5 additions:
     - initial_delay 支持错峰启动，避免所有设备同时连接/读取。
     - status_callback 输出任务状态，用于 Scheduler/Tasks 面板。
+
+    v4.16 large-site additions:
+    - optional global IO semaphore limits concurrent Modbus operations on Windows.
+      This keeps 40+ devices from all connecting/reading at the same instant.
     """
+
+    _global_io_semaphore: Optional[threading.BoundedSemaphore] = None
+
+    @classmethod
+    def configure_global_io_limit(cls, limit: int | None) -> None:
+        try:
+            value = int(limit or 0)
+        except Exception:
+            value = 0
+        cls._global_io_semaphore = threading.BoundedSemaphore(value) if value > 0 else None
+
+    def _acquire_io_slot(self, timeout: float = 10.0) -> bool:
+        sem = self.__class__._global_io_semaphore
+        if sem is None:
+            return True
+        try:
+            return bool(sem.acquire(timeout=max(0.1, float(timeout))))
+        except Exception:
+            return True
+
+    def _release_io_slot(self) -> None:
+        sem = self.__class__._global_io_semaphore
+        if sem is None:
+            return
+        try:
+            sem.release()
+        except Exception:
+            pass
 
     def __init__(
         self,
@@ -119,7 +151,12 @@ class DeviceWorker(threading.Thread):
                 method = getattr(self.client, command.method_name, None)
                 if method is None:
                     raise RuntimeError(f"command method missing: {command.method_name}")
-                result = method(*command.args, **command.kwargs)
+                if not self._acquire_io_slot(timeout=5.0):
+                    raise RuntimeError("BMS IO slot timeout")
+                try:
+                    result = method(*command.args, **command.kwargs)
+                finally:
+                    self._release_io_slot()
                 if result is False:
                     raise RuntimeError(f"command returned false: {command.method_name}")
                 if command.callback:
@@ -154,11 +191,18 @@ class DeviceWorker(threading.Thread):
                         pass
                 return False
             try:
-                if self.client.connect():
-                    self._reconnect_attempts = 0
-                    self._status("Running", "Connected")
-                    return True
-                message = f"Connect failed; retry in {retry:.0f}s"
+                if not self._acquire_io_slot(timeout=10.0):
+                    message = f"Connect skipped: IO pool busy; retry in {retry:.0f}s"
+                else:
+                    try:
+                        connected = bool(self.client.connect())
+                    finally:
+                        self._release_io_slot()
+                    if connected:
+                        self._reconnect_attempts = 0
+                        self._status("Running", "Connected")
+                        return True
+                    message = f"Connect failed; retry in {retry:.0f}s"
             except Exception as exc:
                 message = f"Connect exception: {exc}; retry in {retry:.0f}s"
 
@@ -194,7 +238,13 @@ class DeviceWorker(threading.Thread):
             try:
                 self._process_commands(limit=5)
 
-                raw_snapshot = self.client.read_telemetry_snapshot()
+                if not self._acquire_io_slot(timeout=max(2.0, float(self.interval) * 2.0)):
+                    raw_snapshot = None
+                else:
+                    try:
+                        raw_snapshot = self.client.read_telemetry_snapshot()
+                    finally:
+                        self._release_io_slot()
                 if raw_snapshot is None:
                     consecutive_failures += 1
                     self._status("Timeout", f"Read telemetry failed ({consecutive_failures})", error=True)
@@ -333,7 +383,12 @@ class HeartbeatWorker(threading.Thread):
                 method = getattr(self.client, command.method_name, None)
                 if method is None:
                     raise RuntimeError(f"command method missing: {command.method_name}")
-                result = method(*command.args, **command.kwargs)
+                if not self._acquire_io_slot(timeout=5.0):
+                    raise RuntimeError("PCS IO slot timeout")
+                try:
+                    result = method(*command.args, **command.kwargs)
+                finally:
+                    self._release_io_slot()
                 if result is False:
                     raise RuntimeError(f"command returned false: {command.method_name}")
                 if command.callback:
@@ -428,7 +483,45 @@ class PcsPollingWorker(threading.Thread):
     This mirrors DeviceWorker for BMS, but is profile-driven and reads a selected
     list of PCS points. It is intentionally tolerant: a single bad point is
     returned as an error in point_errors instead of killing the whole cycle.
+
+    v4.16 PCS large-site addition:
+    - optional global IO semaphore limits concurrent PCS Modbus connect/read/write.
+      This prevents Connect All PCS from launching dozens of socket operations at once
+      on Windows, which was causing UI freeze / no-response storms.
     """
+
+    _global_io_semaphore: Optional[threading.BoundedSemaphore] = None
+
+    @classmethod
+    def configure_global_io_limit(cls, limit: int | None) -> None:
+        try:
+            value = int(limit or 0)
+        except Exception:
+            value = 0
+        cls._global_io_semaphore = threading.BoundedSemaphore(value) if value > 0 else None
+
+    def _acquire_io_slot(self, timeout: float = 10.0) -> bool:
+        sem = self.__class__._global_io_semaphore
+        if sem is None:
+            return True
+        try:
+            return bool(sem.acquire(timeout=max(0.1, float(timeout))))
+        except Exception:
+            return True
+
+    def _release_io_slot(self) -> None:
+        sem = self.__class__._global_io_semaphore
+        if sem is None:
+            return
+        try:
+            sem.release()
+        except Exception:
+            pass
+
+    def _sleep_interruptible(self, seconds: float) -> None:
+        end = time.time() + max(0.0, seconds)
+        while self.running and time.time() < end:
+            time.sleep(min(0.2, max(0.0, end - time.time())))
 
     def __init__(
         self,
@@ -499,7 +592,12 @@ class PcsPollingWorker(threading.Thread):
                 method = getattr(self.client, command.method_name, None)
                 if method is None:
                     raise RuntimeError(f"command method missing: {command.method_name}")
-                result = method(*command.args, **command.kwargs)
+                if not self._acquire_io_slot(timeout=5.0):
+                    raise RuntimeError("PCS IO slot timeout")
+                try:
+                    result = method(*command.args, **command.kwargs)
+                finally:
+                    self._release_io_slot()
                 if result is False:
                     raise RuntimeError(f"command returned false: {command.method_name}")
                 if command.callback:
@@ -535,10 +633,22 @@ class PcsPollingWorker(threading.Thread):
         self.running = True
         if self.initial_delay > 0:
             self._status("Scheduled", f"Initial delay {self.initial_delay:.1f}s")
-            time.sleep(self.initial_delay)
+            self._sleep_interruptible(self.initial_delay)
+
+        if not self.running:
+            return
 
         try:
-            if not self.client.connect():
+            if not self._acquire_io_slot(timeout=10.0):
+                self._status("Error", "PCS connect skipped: IO pool busy", error=True)
+                if self.error_callback:
+                    self.error_callback(self.pcs_name, "PCS connect skipped: IO pool busy")
+                return
+            try:
+                connected = bool(self.client.connect())
+            finally:
+                self._release_io_slot()
+            if not connected:
                 self._status("Error", "PCS connect failed", error=True)
                 if self.error_callback:
                     self.error_callback(self.pcs_name, "PCS connect failed")
@@ -562,19 +672,24 @@ class PcsPollingWorker(threading.Thread):
                 "point_errors": {},
             }
             try:
-                for point_name in self.point_names:
-                    try:
-                        raw = self.client.read_raw(point_name)
+                if not self._acquire_io_slot(timeout=max(2.0, float(self.interval) * 2.0)):
+                    raise RuntimeError("PCS IO slot timeout")
+                try:
+                    for point_name in self.point_names:
                         try:
-                            value = self.client.read_value(point_name)
-                        except Exception:
-                            value = raw
-                        snapshot["raw"][point_name] = raw
-                        snapshot["points"][point_name] = value
-                        # Promote common points for CSV/quick display convenience.
-                        snapshot[point_name] = value
-                    except Exception as exc:
-                        snapshot["point_errors"][point_name] = str(exc)
+                            raw = self.client.read_raw(point_name)
+                            try:
+                                value = self.client.read_value(point_name)
+                            except Exception:
+                                value = raw
+                            snapshot["raw"][point_name] = raw
+                            snapshot["points"][point_name] = value
+                            # Promote common points for CSV/quick display convenience.
+                            snapshot[point_name] = value
+                        except Exception as exc:
+                            snapshot["point_errors"][point_name] = str(exc)
+                finally:
+                    self._release_io_slot()
 
                 latency_ms = (time.time() - start) * 1000.0
                 self._status("Running", "PCS read OK", latency_ms=latency_ms, read_ok=True)

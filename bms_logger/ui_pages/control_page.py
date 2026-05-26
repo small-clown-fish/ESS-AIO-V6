@@ -54,6 +54,7 @@ def _build_control_tab(self, tabs: QTabWidget) -> None:
 
         control_inner_tabs = QTabWidget()
         control_inner_tabs.setObjectName("ControlInnerTabs")
+        self.control_inner_tabs = control_inner_tabs
         control_root.addWidget(control_inner_tabs)
 
         bms_control_page = QWidget()
@@ -63,15 +64,16 @@ def _build_control_tab(self, tabs: QTabWidget) -> None:
         self._build_bms_control_column(bms_layout)
         control_inner_tabs.addTab(bms_control_page, "BMS Control")
 
-        # PCS Control is a core page now. Do not hide it by runtime_config,
-        # otherwise older user settings can make the tab disappear after an update.
+        # PCS Control can be shown/hidden from Settings.  Keep the page object
+        # alive so Apply Runtime Params can toggle it without rebuilding Control.
         self.pcs_control_tab_index = -1
-        pcs_control_page = QWidget()
-        pcs_layout = QVBoxLayout(pcs_control_page)
+        self.pcs_control_page = QWidget()
+        pcs_layout = QVBoxLayout(self.pcs_control_page)
         pcs_layout.setContentsMargins(4, 8, 4, 4)
         pcs_layout.setSpacing(12)
         self._build_pcs_control_column(pcs_layout)
-        self.pcs_control_tab_index = control_inner_tabs.addTab(pcs_control_page, "PCS Control")
+        if getattr(self, "pcs_control_ui_enabled", True):
+            self.pcs_control_tab_index = control_inner_tabs.addTab(self.pcs_control_page, "PCS Control")
 
         tabs.addTab(control_tab, "Control")
 

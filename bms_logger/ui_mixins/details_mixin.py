@@ -17,12 +17,18 @@ from PySide6.QtGui import QColor
 
 class DetailsMixin:
     def refresh_details(self, device_name: str) -> None:
+        if hasattr(self, "_is_main_page_visible") and not self._is_main_page_visible("Details"):
+            return
         self.current_detail_device = device_name
-        self.detail_device_label.setText(f"Current device: {device_name}")
+        text = f"Current device: {device_name}"
+        if self.detail_device_label.text() != text:
+            self.detail_device_label.setText(text)
 
         snapshot = self.latest_snapshots.get(device_name, {})
         for key, _label in self.DETAIL_FIELDS:
-            value = snapshot.get(key, "-")
-            self.detail_value_labels[key].setText(str(value))
+            value = str(snapshot.get(key, "-"))
+            label = self.detail_value_labels.get(key)
+            if label is not None and label.text() != value:
+                label.setText(value)
 
 

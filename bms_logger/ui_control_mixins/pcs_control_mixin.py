@@ -205,9 +205,14 @@ class PcsControlMixin:
         return str(remark)
 
     def handle_refresh_pcs_live_status(self) -> None:
+        if hasattr(self, "_is_main_page_visible") and not self._is_main_page_visible("Control"):
+            return
         device_name = self._get_selected_control_device()
         if not device_name:
             return
+        if getattr(self, "performance_mode_enabled", True) and getattr(self, "_pcs_live_refresh_busy", False):
+            return
+        self._pcs_live_refresh_busy = True
         pcs_name = self._get_selected_pcs_name()
         pcs_client = self.create_pcs_client_for_pcs_name(pcs_name)
         rows = []
@@ -230,6 +235,7 @@ class PcsControlMixin:
                 except Exception as exc:
                     rows.append([point_name, address, title, "-", "-", unit, f"ERROR: {exc}"])
         except Exception as exc:
+            self._pcs_live_refresh_busy = False
             self.control_log(f"[PCS] Live status refresh failed: {exc}")
             if hasattr(self, "pcs_live_table"):
                 self.pcs_live_table.setRowCount(1)
@@ -241,15 +247,27 @@ class PcsControlMixin:
                 pcs_client.close()
             except Exception:
                 pass
+            self._pcs_live_refresh_busy = False
 
         if not hasattr(self, "pcs_live_table"):
             return
-        self.pcs_live_table.setRowCount(len(rows))
-        for row_idx, row in enumerate(rows):
-            for col, value in enumerate(row):
-                text = self._pcs_fmt_cell_value(value) if hasattr(self, "_pcs_fmt_cell_value") else str(value)
-                item = QTableWidgetItem(text)
-                self.pcs_live_table.setItem(row_idx, col, item)
+        sig = (pcs_name, tuple(tuple(str(c) for c in r) for r in rows))
+        if getattr(self, "_last_pcs_live_signature", None) == sig:
+            return
+        self._last_pcs_live_signature = sig
+        self.pcs_live_table.setUpdatesEnabled(False)
+        try:
+            self.pcs_live_table.setRowCount(len(rows))
+            for row_idx, row in enumerate(rows):
+                for col, value in enumerate(row):
+                    text = self._pcs_fmt_cell_value(value) if hasattr(self, "_pcs_fmt_cell_value") else str(value)
+                    item = self.pcs_live_table.item(row_idx, col)
+                    if item is None:
+                        self.pcs_live_table.setItem(row_idx, col, QTableWidgetItem(text))
+                    elif item.text() != text:
+                        item.setText(text)
+        finally:
+            self.pcs_live_table.setUpdatesEnabled(True)
         self.control_log(f"[PCS] Live registers refreshed: pcs={pcs_name}, rows={len(rows)}")
 
     def handle_toggle_pcs_live_auto_refresh(self, checked: bool) -> None:
@@ -355,56 +373,198 @@ class PcsControlMixin:
         value = float(self.pcs_reactive_power_spin.value()) if hasattr(self, "pcs_reactive_power_spin") else 0.0
         self._set_selected_pcs_power_value(method_name="set_reactive_power", value=value, unit="kvar", label="Set Reactive Power")
 
-    def apply_runtime_params(self) -> None:
-        self.fake_mode = self.fake_mode_combo.currentText() == "Fake"
-        if hasattr(self, "pcs_control_ui_combo"):
-            self.pcs_control_ui_enabled = self.pcs_control_ui_combo.currentText() == "Enabled"
-        self.heartbeat_interval = float(self.heartbeat_interval_spin.value())
-        self.hv_step_timeout = float(self.hv_timeout_spin.value())
-        self.hv_poll_interval = float(self.hv_poll_interval_spin.value())
-        self.pcs_zero_power_threshold = float(self.pcs_zero_power_spin.value())
-        self.charge_cutoff_max_cell_voltage = float(self.charge_cutoff_voltage_spin.value())
-        self.discharge_cutoff_min_cell_voltage = float(self.discharge_cutoff_voltage_spin.value())
-        self.cutoff_mode = self.cutoff_mode_combo.currentText()
-        self.cutoff_trigger_confirm_count = int(self.cutoff_trigger_confirm_spin.value())
-        self.cutoff_recover_confirm_count = int(self.cutoff_recover_confirm_spin.value())
-        self.alarm_history_window_before_minutes = int(self.alarm_window_before_spin.value())
-        self.alarm_history_window_after_minutes = int(self.alarm_window_after_spin.value())
-        self.power_derating_enabled = self.derating_enabled_combo.currentText() == "Enabled"
-        self.derating_margin_mv = float(self.derating_margin_spin.value())
-        self.derating_power_kw = float(self.derating_power_spin.value())
-        self.power_tracking_enabled = self.power_tracking_enabled_combo.currentText() == "Enabled"
-        self.power_tracking_tolerance_kw = float(self.power_tracking_tolerance_spin.value())
-        self.power_tracking_confirm_count = int(self.power_tracking_confirm_spin.value())
-        self.power_tracking_auto_retry = self.power_retry_enabled_combo.currentText() == "Enabled"
-        self.power_tracking_retry_interval = int(self.power_retry_interval_spin.value())
-        self.power_tracking_max_retry = int(self.power_retry_max_spin.value())
-        self.pcs_fault_protection_mode = self.pcs_fault_protection_combo.currentText()
-        self.pcs_fault_protection_enabled = self.pcs_fault_protection_mode != "Disabled"
-        self.pcs_fault_confirm_count = int(self.pcs_fault_confirm_spin.value())
-        if hasattr(self, "worker_stagger_spin"):
-            self.worker_start_stagger_seconds = float(self.worker_stagger_spin.value())
-        if hasattr(self, "performance_mode_combo"):
-            self.performance_mode_enabled = self.performance_mode_combo.currentText() == "Enabled"
-        if hasattr(self, "ui_refresh_interval_spin"):
-            self.ui_refresh_interval = float(self.ui_refresh_interval_spin.value())
-        if hasattr(self, "curve_refresh_interval_spin"):
-            self.curve_refresh_interval = float(self.curve_refresh_interval_spin.value())
-        if hasattr(self, "status_refresh_interval_spin"):
-            self.status_refresh_interval = float(self.status_refresh_interval_spin.value())
-        if hasattr(self, "log_flush_interval_spin"):
-            self.log_flush_interval_ms = int(self.log_flush_interval_spin.value())
-            timer = getattr(self, "_log_flush_timer", None)
-            if timer is not None:
-                try:
-                    timer.setInterval(int(self.log_flush_interval_ms))
-                except Exception:
-                    pass
-        if hasattr(self, "fleet_status_timer"):
+
+    def _sync_pcs_control_tab_visibility(self) -> None:
+        """Show/hide PCS Control tab immediately after Runtime Settings apply."""
+        tabs = getattr(self, "control_inner_tabs", None)
+        page = getattr(self, "pcs_control_page", None)
+        if tabs is None or page is None:
+            return
+        enabled = bool(getattr(self, "pcs_control_ui_enabled", True))
+        try:
+            current_idx = tabs.indexOf(page)
+        except Exception:
+            current_idx = -1
+        if enabled and current_idx < 0:
+            self.pcs_control_tab_index = tabs.addTab(page, "PCS Control")
+        elif (not enabled) and current_idx >= 0:
+            tabs.removeTab(current_idx)
+            self.pcs_control_tab_index = -1
+
+    def _restart_runtime_timers_after_apply(self) -> None:
+        """Apply timer intervals without restarting communication workers."""
+        timer_specs = [
+            ("fleet_status_timer", max(1000, float(getattr(self, "status_refresh_interval", 5.0)) * 1000)),
+            ("_log_flush_timer", max(300, int(getattr(self, "log_flush_interval_ms", 1000)))),
+            ("status_refresh_timer", max(1000, float(getattr(self, "status_refresh_interval", 5.0)) * 1000)),
+            ("ui_refresh_timer", max(500, float(getattr(self, "ui_refresh_interval", 3.0)) * 1000)),
+            ("curve_refresh_timer", max(1000, float(getattr(self, "curve_refresh_interval", 5.0)) * 1000)),
+        ]
+        for attr, interval in timer_specs:
+            timer = getattr(self, attr, None)
+            if timer is None:
+                continue
             try:
-                self.fleet_status_timer.setInterval(int(max(1000, float(getattr(self, "status_refresh_interval", 5.0)) * 1000)))
+                timer.setInterval(int(interval))
             except Exception:
                 pass
+
+    def _qt_widget_alive(self, widget) -> bool:
+        """Return False when a PySide wrapper points to a deleted C++ QObject."""
+        if widget is None:
+            return False
+        try:
+            from shiboken6 import isValid  # type: ignore
+            return bool(isValid(widget))
+        except Exception:
+            # In tests or non-Qt environments, fall back to a best-effort check.
+            return True
+
+    def _safe_spin_value(self, attr: str, default):
+        widget = getattr(self, attr, None)
+        if not self._qt_widget_alive(widget):
+            return default
+        try:
+            return widget.value()
+        except RuntimeError:
+            # Qt object was deleted between the validity check and the call.
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+            return default
+        except Exception:
+            return default
+
+    def _safe_combo_text(self, attr: str, default: str = "") -> str:
+        widget = getattr(self, attr, None)
+        if not self._qt_widget_alive(widget):
+            return default
+        try:
+            return str(widget.currentText())
+        except RuntimeError:
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+            return default
+        except Exception:
+            return default
+
+    def _safe_label_set_text(self, attr: str, text: str) -> None:
+        widget = getattr(self, attr, None)
+        if not self._qt_widget_alive(widget):
+            return
+        try:
+            widget.setText(text)
+        except RuntimeError:
+            try:
+                setattr(self, attr, None)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def apply_runtime_params(self) -> None:
+        """Apply only live runtime widgets; tolerate hidden/rebuilt Settings pages.
+
+        Some settings widgets can be deleted by Qt when pages/tabs are rebuilt.
+        Accessing a stale PySide wrapper raises:
+        ``RuntimeError: Internal C++ object already deleted``.
+        This method therefore reads widgets through safe helpers and keeps the
+        previous runtime value when a widget is no longer alive.
+        """
+        self.fake_mode = self._safe_combo_text(
+            "fake_mode_combo", "Fake" if getattr(self, "fake_mode", False) else "Real"
+        ) == "Fake"
+        self.pcs_control_ui_enabled = self._safe_combo_text(
+            "pcs_control_ui_combo", "Enabled" if getattr(self, "pcs_control_ui_enabled", True) else "Disabled"
+        ) == "Enabled"
+
+        self.heartbeat_interval = float(self._safe_spin_value("heartbeat_interval_spin", getattr(self, "heartbeat_interval", 1.0)))
+        self.hv_step_timeout = float(self._safe_spin_value("hv_timeout_spin", getattr(self, "hv_step_timeout", 30.0)))
+        self.hv_poll_interval = float(self._safe_spin_value("hv_poll_interval_spin", getattr(self, "hv_poll_interval", 1.0)))
+        self.pcs_zero_power_threshold = float(self._safe_spin_value("pcs_zero_power_spin", getattr(self, "pcs_zero_power_threshold", 0.1)))
+
+        # Legacy cutoff widgets used to live in Runtime Settings.  Cluster
+        # Strategy now owns cutoff thresholds, but keep these values safely for
+        # backward compatibility and old workflows.
+        self.charge_cutoff_max_cell_voltage = float(
+            self._safe_spin_value("charge_cutoff_voltage_spin", getattr(self, "charge_cutoff_max_cell_voltage", 3550.0))
+        )
+        self.discharge_cutoff_min_cell_voltage = float(
+            self._safe_spin_value("discharge_cutoff_voltage_spin", getattr(self, "discharge_cutoff_min_cell_voltage", 2800.0))
+        )
+        self.cutoff_mode = self._safe_combo_text("cutoff_mode_combo", getattr(self, "cutoff_mode", "Alarm Only"))
+        self.cutoff_trigger_confirm_count = int(
+            self._safe_spin_value("cutoff_trigger_confirm_spin", getattr(self, "cutoff_trigger_confirm_count", 3))
+        )
+        self.cutoff_recover_confirm_count = int(
+            self._safe_spin_value("cutoff_recover_confirm_spin", getattr(self, "cutoff_recover_confirm_count", 3))
+        )
+        self.alarm_history_window_before_minutes = int(
+            self._safe_spin_value("alarm_window_before_spin", getattr(self, "alarm_history_window_before_minutes", 5))
+        )
+        self.alarm_history_window_after_minutes = int(
+            self._safe_spin_value("alarm_window_after_spin", getattr(self, "alarm_history_window_after_minutes", 5))
+        )
+
+        # Legacy standalone derating / power tracking / PCS fault protection are
+        # hidden in the current UI because Cluster Strategy owns power/cutoff
+        # behavior now.  Keep numeric values loaded for backward compatibility,
+        # but force these legacy loops off so Apply Runtime Params cannot enable
+        # unexpected background control.
+        self.power_derating_enabled = False
+        self.derating_margin_mv = float(self._safe_spin_value("derating_margin_spin", getattr(self, "derating_margin_mv", 0.0)))
+        self.derating_power_kw = float(self._safe_spin_value("derating_power_spin", getattr(self, "derating_power_kw", 0.0)))
+        self.power_tracking_enabled = False
+        self.power_tracking_tolerance_kw = float(
+            self._safe_spin_value("power_tracking_tolerance_spin", getattr(self, "power_tracking_tolerance_kw", 0.5))
+        )
+        self.power_tracking_confirm_count = int(
+            self._safe_spin_value("power_tracking_confirm_spin", getattr(self, "power_tracking_confirm_count", 3))
+        )
+        self.power_tracking_auto_retry = False
+        self.power_tracking_retry_interval = int(
+            self._safe_spin_value("power_retry_interval_spin", getattr(self, "power_tracking_retry_interval", 10))
+        )
+        self.power_tracking_max_retry = int(
+            self._safe_spin_value("power_retry_max_spin", getattr(self, "power_tracking_max_retry", 3))
+        )
+        self.pcs_fault_protection_mode = "Disabled"
+        self.pcs_fault_protection_enabled = False
+        self.pcs_fault_confirm_count = int(
+            self._safe_spin_value("pcs_fault_confirm_spin", getattr(self, "pcs_fault_confirm_count", 3))
+        )
+
+        self.worker_start_stagger_seconds = float(
+            self._safe_spin_value("worker_stagger_spin", getattr(self, "worker_start_stagger_seconds", 0.5))
+        )
+        self.performance_mode_enabled = self._safe_combo_text(
+            "performance_mode_combo", "Enabled" if getattr(self, "performance_mode_enabled", True) else "Disabled"
+        ) == "Enabled"
+        self.large_site_mode_enabled = self._safe_combo_text(
+            "large_site_mode_combo", "Enabled" if getattr(self, "large_site_mode_enabled", True) else "Disabled"
+        ) == "Enabled"
+        self.max_parallel_bms_io = int(
+            self._safe_spin_value("max_parallel_bms_io_spin", getattr(self, "max_parallel_bms_io", 10))
+        )
+        try:
+            from ..worker import DeviceWorker
+        except Exception:
+            try:
+                from bms_logger.worker import DeviceWorker
+            except Exception:
+                DeviceWorker = None  # type: ignore
+        if DeviceWorker is not None:
+            DeviceWorker.configure_global_io_limit(self.max_parallel_bms_io if getattr(self, "large_site_mode_enabled", True) else 0)
+
+        self.ui_refresh_interval = float(self._safe_spin_value("ui_refresh_interval_spin", getattr(self, "ui_refresh_interval", 3.0)))
+        self.curve_refresh_interval = float(self._safe_spin_value("curve_refresh_interval_spin", getattr(self, "curve_refresh_interval", 5.0)))
+        self.status_refresh_interval = float(self._safe_spin_value("status_refresh_interval_spin", getattr(self, "status_refresh_interval", 5.0)))
+        self.log_flush_interval_ms = int(self._safe_spin_value("log_flush_interval_spin", getattr(self, "log_flush_interval_ms", 1000)))
+
+        self._restart_runtime_timers_after_apply()
 
         self.control_log(
             "[PARAM] Runtime parameters applied: "
@@ -415,19 +575,36 @@ class PcsControlMixin:
             f"hv_poll={self.hv_poll_interval}s, "
             f"pcs_zero_power={self.pcs_zero_power_threshold}kW, "
             f"charge_cutoff={self.charge_cutoff_max_cell_voltage}mV, "
-            f"discharge_cutoff={self.discharge_cutoff_min_cell_voltage}mV"
+            f"discharge_cutoff={self.discharge_cutoff_min_cell_voltage}mV, "
             f"cutoff_mode={self.cutoff_mode}, "
-            f"cutoff_trigger_confirm={self.cutoff_trigger_confirm_count}, "
-            f"cutoff_recover_confirm={self.cutoff_recover_confirm_count}, "
-            f"alarm_window_before={self.alarm_history_window_before_minutes}min, "
-            f"alarm_window_after={self.alarm_history_window_after_minutes}min, "
             f"worker_stagger={self.worker_start_stagger_seconds}s, "
             f"performance_mode={'Enabled' if getattr(self, 'performance_mode_enabled', True) else 'Disabled'}, "
+            f"large_site_mode={'Enabled' if getattr(self, 'large_site_mode_enabled', True) else 'Disabled'}, "
+            f"max_parallel_bms_io={getattr(self, 'max_parallel_bms_io', 10)}, "
             f"ui_refresh={self.ui_refresh_interval}s, "
             f"curve_refresh={getattr(self, 'curve_refresh_interval', 5.0)}s, "
-            f"status_refresh={getattr(self, 'status_refresh_interval', 5.0)}s, "
+            f"status_refresh={getattr(self, 'status_refresh_interval', 5.0)}s"
         )
+        self._sync_pcs_control_tab_visibility()
         self.save_runtime_config()
+
+        summary = (
+            f"Performance={'ON' if getattr(self, 'performance_mode_enabled', True) else 'OFF'}, "
+            f"LargeSite={'ON' if getattr(self, 'large_site_mode_enabled', True) else 'OFF'}, "
+            f"PCS Control={'ON' if getattr(self, 'pcs_control_ui_enabled', True) else 'OFF'}, "
+            f"UI={getattr(self, 'ui_refresh_interval', 3.0)}s, "
+            f"Status={getattr(self, 'status_refresh_interval', 5.0)}s, "
+            f"Curve={getattr(self, 'curve_refresh_interval', 5.0)}s, "
+            "Legacy derating/tracking/protection=OFF"
+        )
+        self._safe_label_set_text("runtime_apply_status_label", f"Applied: {summary}")
+        if self._qt_widget_alive(getattr(self, "runtime_apply_status_label", None)):
+            try:
+                from PySide6.QtCore import QTimer
+                QTimer.singleShot(5000, lambda: self._safe_label_set_text("runtime_apply_status_label", "-"))
+            except Exception:
+                pass
+        QMessageBox.information(self, "Runtime Settings", f"Runtime parameters applied successfully.\n\n{summary}")
 
     # ------------------------------------------------------------------
     # Fleet-scale controls: 24 BMS + 48 PCS heartbeat and broadcast PCS commands
